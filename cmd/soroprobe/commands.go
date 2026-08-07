@@ -1,0 +1,258 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"runtime/debug"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/soroworks/soroprobe/internal/api"
+	"github.com/soroworks/soroprobe/internal/health"
+	"github.com/soroworks/soroprobe/internal/probe"
+)
+
+// version is overridden at build time with -ldflags "-X main.version=...".
+var version = ""
+
+const argHelp = `Arguments use a "type:value" form. Supported types:
+
+  bool:true          void                 null
+  u32:5              i32:-5               u64:100        i64:-100
+  u128:10000000      i128:-10000000       u256:...       i256:...
+  timepoint:1700000000                    duration:3600
+  sym:transfer       str:"hello world"    bytes:deadbeef
+  addr:GABC...       addr:CDEF...
+
+A bare value with no prefix is inferred: "true" and "false" become bool, "void"
+and "null" become void, a valid G... or C... address becomes an address, a run
+of digits becomes i128, and anything else becomes a symbol if it fits Soroban's
+symbol rules or a string otherwise.
+
+Prefer explicit prefixes. A contract expecting u32 will fail confusingly if it
+is handed an inferred i128.`
+
+func newSimulateCmd(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "simulate <contract-id> <function> [args...]",
+		Short: "Simulate a contract invocation and report its result and cost",
+		Long: `Build a contract invocation, simulate it against the network, and report
+whether it would succeed, what it would return, and what it would cost.
+
+Nothing is submitted and no signing takes place.
+
+` + argHelp,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, cleanup, err := opts.prober()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
+				ContractID: args[0],
+				Function:   args[1],
+				Args:       args[2:],
+			})
+			if err != nil {
+				return err
+			}
+
+			if opts.jsonOut {
+				return writeJSON(cmd.OutOrStdout(), result)
+			}
+			return renderSimulate(cmd.OutOrStdout(), result)
+		},
+	}
+}
+
+func newInspectCmd(opts *options) *cobra.Command {
+	var dataKeys []string
+	var durability string
+
+	cmd := &cobra.Command{
+		Use:   "inspect <contract-id>",
+		Short: "Read a contract's state entries and report expiration health",
+		Long: `Read a contract's instance and code entries, and report how close each is to
+expiring.
+
+Stellar RPC reads ledger entries by key and cannot enumerate a contract's data
+entries, so data entries must be named explicitly with --key. Listing every
+entry a contract owns requires an indexer, which SoroProbe deliberately does not
+depend on.
+
+` + argHelp,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			d, err := parseDurability(durability)
+			if err != nil {
+				return err
+			}
+
+			p, cleanup, err := opts.prober()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			result, err := p.Inspect(cmd.Context(), probe.InspectRequest{
+				ContractID:     args[0],
+				DataKeys:       dataKeys,
+				DataDurability: d,
+			})
+			if err != nil {
+				return err
+			}
+
+			if opts.jsonOut {
+				return writeJSON(cmd.OutOrStdout(), result)
+			}
+			return renderInspect(cmd.OutOrStdout(), result)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to inspect, in type:value form (repeatable)")
+	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
+	return cmd
+}
+
+func newCheckCmd(opts *options) *cobra.Command {
+	var function string
+	var callArgs []string
+	var dataKeys []string
+	var durability string
+
+	cmd := &cobra.Command{
+		Use:   "check <contract-id>",
+		Short: "Run a combined health check, exiting non-zero on failure",
+		Long: `Run a combined health check against a contract: confirm it is deployed, that
+its instance and code entries are live and not near expiration, and optionally
+that a read-only call simulates successfully.
+
+Exits 0 when every check passes, 1 when any check fails, and 2 when SoroProbe
+itself could not run. A TTL warning does not fail the check; it is a signal to
+extend the entry, not a reason to break a pipeline.
+
+--fn is optional. SoroProbe cannot discover a contract's exported functions, and
+guessing one would produce a misleading failure, so the simulation step is
+reported as skipped unless a function is named.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			d, err := parseDurability(durability)
+			if err != nil {
+				return err
+			}
+
+			p, cleanup, err := opts.prober()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			result, err := p.Check(cmd.Context(), probe.CheckRequest{
+				ContractID:     args[0],
+				Function:       function,
+				Args:           callArgs,
+				DataKeys:       dataKeys,
+				DataDurability: d,
+			})
+			if err != nil {
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			if opts.jsonOut {
+				err = writeJSON(out, result)
+			} else {
+				err = renderCheck(out, result)
+			}
+			if err != nil {
+				return err
+			}
+
+			if !result.OK {
+				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&function, "fn", "", "read-only function to simulate as a liveness probe")
+	cmd.Flags().StringArrayVar(&callArgs, "arg", nil, "argument for --fn, in type:value form (repeatable)")
+	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
+	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
+	return cmd
+}
+
+func newServeCmd(opts *options) *cobra.Command {
+	var addr string
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run the HTTP API",
+		Long: `Serve the HTTP API, which mirrors the CLI for use from CI systems and other
+services. The API is read-only, exactly like the CLI.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if addr != "" {
+				opts.cfg.HTTPAddr = addr
+			}
+
+			p, cleanup, err := opts.prober()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			log := opts.cfg.Logger(os.Stderr)
+			server := api.New(api.Options{
+				Prober: p,
+				Addr:   opts.cfg.HTTPAddr,
+				Logger: log,
+			})
+			return server.ListenAndServe(cmd.Context())
+		},
+	}
+
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address, overriding HTTP_ADDR")
+	return cmd
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the SoroProbe version",
+		Args:  cobra.NoArgs,
+		// Version needs no network, so skip config resolution.
+		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), resolveVersion())
+			return err
+		},
+	}
+}
+
+// resolveVersion prefers a build-time version, falling back to the module
+// version stamped into the binary by the Go toolchain.
+func resolveVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "devel"
+}
+
+func parseDurability(s string) (health.Durability, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "persistent":
+		return health.DurabilityPersistent, nil
+	case "temporary", "temp":
+		return health.DurabilityTemporary, nil
+	default:
+		return "", fmt.Errorf("unknown durability %q (want persistent or temporary)", s)
+	}
+}

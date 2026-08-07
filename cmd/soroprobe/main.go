@@ -1,0 +1,36 @@
+// Command soroprobe is a health and simulation checker for Stellar/Soroban
+// smart contracts.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+)
+
+// checkFailedError marks a probe that ran successfully but found the contract
+// unhealthy, so that main can exit 1 rather than 2.
+type checkFailedError struct{ msg string }
+
+func (e *checkFailedError) Error() string { return e.msg }
+
+func main() {
+	// Ctrl-C cancels in-flight RPC calls and shuts the HTTP server down cleanly.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cmd, _ := newRootCmd()
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		var failed *checkFailedError
+		if errors.As(err, &failed) {
+			fmt.Fprintln(os.Stderr, failed.Error())
+			os.Exit(exitFailed)
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(exitRuntime)
+	}
+	os.Exit(exitOK)
+}

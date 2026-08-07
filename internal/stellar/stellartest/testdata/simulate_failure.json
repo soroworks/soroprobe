@@ -1,0 +1,8 @@
+{
+  "error": "HostError: Error(Value, InvalidInput)\n\nEvent log (newest first):\n   0: [Diagnostic Event] contract:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC, topics:[error, Error(Value, InvalidInput)], data:[\"symbol not found in slice of strs\", no_such_fn]\n   1: [Diagnostic Event] topics:[fn_call, CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC, no_such_fn], data:Void\n",
+  "events": [
+    "AAAAAAAAAAAAAAAAAAAAAgAAAAAAAAADAAAADwAAAAdmbl9jYWxsAAAAAA0AAAAg15KLcsJwPM/q9+uf9O9NUEpVqLl5/JtFDqLIQrTRzmEAAAAPAAAACm5vX3N1Y2hfZm4AAAAAAAE=",
+    "AAAAAAAAAAAAAAAB15KLcsJwPM/q9+uf9O9NUEpVqLl5/JtFDqLIQrTRzmEAAAACAAAAAAAAAAIAAAAPAAAABWVycm9yAAAAAAAAAgAAAAgAAAACAAAAEAAAAAEAAAACAAAADgAAACFzeW1ib2wgbm90IGZvdW5kIGluIHNsaWNlIG9mIHN0cnMAAAAAAAAPAAAACm5vX3N1Y2hfZm4AAA=="
+  ],
+  "latestLedger": 4014125
+}
