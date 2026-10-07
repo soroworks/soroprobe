@@ -64,6 +64,7 @@ var _ Codec = (*Registry)(nil)
 func NewRegistry() *Registry {
 	r := &Registry{encoders: make(map[string]EncodeFunc)}
 	registerBuiltins(r)
+	registerCollections(r)
 	return r
 }
 

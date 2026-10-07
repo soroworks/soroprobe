@@ -300,6 +300,22 @@ soroprobe simulate CDLZ... transfer \
 | `str`, `string` | `str:"hello world"` |
 | `bytes` | `bytes:deadbeef`, `bytes:0xdeadbeef` |
 | `addr`, `address` | `addr:GABC...`, `addr:CDEF...` |
+| `vec` | `vec:["u32:1","u32:2"]`, `vec:[1, 2]` |
+| `map` | `map:[["sym:a","u32:1"],["sym:b","u32:2"]]` |
+
+**Collections** are written as JSON, the one nesting syntax that survives a
+shell intact — quote the whole argument:
+
+```bash
+soroprobe simulate CDEF... set_weights 'map:[["sym:alice", "u32:3"], ["sym:bob", "u32:1"]]'
+```
+
+Each string element is itself an argument spec, so every type above works
+inside a collection, including nested `vec`/`map`. A JSON number, `true`,
+`false` or `null` stands for the bare literal of that spelling and is
+inferred the same way; a nested array is a nested `vec`. Map entries are kept
+in the order written, and Soroban rejects a map whose keys are not sorted
+ascending and unique, so write them in order.
 
 **Inference.** A bare value with no prefix is inferred: `true`/`false` become
 bool, `void`/`null` become void, a valid `G...`/`C...` address becomes an
@@ -345,8 +361,10 @@ in JSON), rather than failing a probe that would otherwise work. The network
 is matched by passphrase, so a mainnet probe never picks up a testnet
 interface.
 
-Arguments whose declared type has no single-literal form — `Vec`, `Map`,
-tuples and user-defined types — are passed through unchanged.
+Collections are typed element by element: for a `Vec<u32>` parameter, `[1, 2]`
+becomes `vec:["u32:1","u32:2"]`, and a `Map<Symbol, u32>` given as
+`[["a", 10]]` gets typed keys and values, recursively. Tuples and
+user-defined types have no literal form and are passed through unchanged.
 
 **Results** are decoded to JSON-friendly values. Integers wider than 32 bits
 become decimal **strings**, not JSON numbers — a `u64` or `i128` cannot survive

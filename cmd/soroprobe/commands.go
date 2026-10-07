@@ -24,6 +24,11 @@ const argHelp = `Arguments use a "type:value" form. Supported types:
   timepoint:1700000000                    duration:3600
   sym:transfer       str:"hello world"    bytes:deadbeef
   addr:GABC...       addr:CDEF...
+  'vec:["u32:1","u32:2"]'                 'map:[["sym:a","u32:1"]]'
+
+Collections are JSON; each string element is itself an argument spec, and a
+JSON number, true, false or null is a bare literal. Write map keys in
+ascending order: Soroban rejects an unsorted map.
 
 A bare value with no prefix is inferred: "true" and "false" become bool, "void"
 and "null" become void, a valid G... or C... address becomes an address, a run

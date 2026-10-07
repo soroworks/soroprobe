@@ -83,6 +83,58 @@ func TestAnnotatePassesThroughUnsupportedKinds(t *testing.T) {
 	assert.Equal(t, []string{"whatever"}, got)
 }
 
+func vecOf(el abi.Type) abi.Type {
+	return abi.Type{Kind: "vec", Display: "Vec<" + el.Display + ">", Element: &el}
+}
+
+func TestAnnotateTypesCollectionElements(t *testing.T) {
+	t.Parallel()
+	reg := scval.NewRegistry()
+
+	u32 := scalar("u32", "u32")
+	sym := scalar("symbol", "Symbol")
+	weights := abi.Type{Kind: "map", Display: "Map<Symbol, u32>", Key: &sym, Value: &u32}
+	fn := abi.Function{Name: "f", Inputs: []abi.Param{
+		{Name: "ids", Type: vecOf(u32)},
+		{Name: "weights", Type: weights},
+		{Name: "grid", Type: vecOf(vecOf(u32))},
+		{Name: "mixed", Type: vecOf(u32)},
+	}}
+
+	got, err := abi.Annotate(&fn, []string{
+		`[1, 2]`,
+		`[["a", 10], ["b", 20]]`,
+		`[[1], []]`,
+		`["i64:3", 4]`,
+	}, reg.HasType)
+	require.NoError(t, err)
+
+	assert.Equal(t, `vec:["u32:1","u32:2"]`, got[0])
+	assert.Equal(t, `map:[["symbol:a","u32:10"],["symbol:b","u32:20"]]`, got[1])
+	assert.Equal(t, `vec:["vec:[\"u32:1\"]","vec:[]"]`, got[2])
+	assert.Equal(t, `vec:["i64:3","u32:4"]`, got[3], "an explicit element type still wins")
+
+	// The annotated specs must encode, and to the declared types.
+	for _, spec := range got {
+		_, err := reg.Encode(spec)
+		require.NoError(t, err, spec)
+	}
+	v, err := reg.Encode(got[0])
+	require.NoError(t, err)
+	assert.NotNil(t, (**v.Vec)[0].U32, "elements are u32, not inferred i128")
+}
+
+func TestAnnotateCollectionErrorsNameTheArgument(t *testing.T) {
+	t.Parallel()
+	u32 := scalar("u32", "u32")
+	fn := abi.Function{Name: "f", Inputs: []abi.Param{
+		{Name: "ids", Type: vecOf(u32)},
+	}}
+	_, err := abi.Annotate(&fn, []string{`[1, `}, scval.NewRegistry().HasType)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "argument ids")
+}
+
 func TestSignature(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t,
