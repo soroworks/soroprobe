@@ -11,3 +11,6 @@ soroprobe.json
 .idea/
 .vscode/
 .DS_Store
+
+# GoReleaser output.
+/dist/
