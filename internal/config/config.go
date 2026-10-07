@@ -52,6 +52,7 @@ const (
 	EnvWarnLedgers       = "WARN_LEDGERS"
 	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
 	EnvConfigFile        = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL      = "SOROVAULT_URL"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -75,6 +76,9 @@ type Config struct {
 	// CriticalLedgers is the remaining-TTL threshold, in ledgers, below which
 	// an entry is reported as critical.
 	CriticalLedgers uint32 `json:"critical_ledgers"`
+	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
+	// interfaces type simulate arguments. Empty disables the lookup.
+	SoroVaultURL string `json:"sorovault_url"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -102,6 +106,7 @@ type fileConfig struct {
 	Timeout           *string `json:"timeout"`
 	WarnLedgers       *uint32 `json:"warn_ledgers"`
 	CriticalLedgers   *uint32 `json:"critical_ledgers"`
+	SoroVaultURL      *string `json:"sorovault_url"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -150,6 +155,7 @@ func applyFile(cfg *Config, path string, required bool) error {
 	setString(&cfg.SourceAccount, fc.SourceAccount)
 	setString(&cfg.HTTPAddr, fc.HTTPAddr)
 	setString(&cfg.LogLevel, fc.LogLevel)
+	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
 	}
@@ -172,6 +178,7 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.SourceAccount, lookup(EnvSourceAccount))
 	setString(&cfg.HTTPAddr, lookup(EnvHTTPAddr))
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
+	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
 
 	if v := lookup(EnvTimeout); v != nil {
 		d, err := time.ParseDuration(*v)
@@ -236,6 +243,10 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err
+	}
+	if c.SoroVaultURL != "" &&
+		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
+		return fmt.Errorf("sorovault url %q must start with http:// or https://", c.SoroVaultURL)
 	}
 	return nil
 }

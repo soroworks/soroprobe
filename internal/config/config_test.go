@@ -62,7 +62,8 @@ func TestLoadFromFile(t *testing.T) {
 		"log_level": "debug",
 		"timeout": "5s",
 		"warn_ledgers": 100,
-		"critical_ledgers": 10
+		"critical_ledgers": 10,
+		"sorovault_url": "http://vault.internal:8080"
 	}`)
 
 	cfg, err := config.Load(path)
@@ -75,6 +76,7 @@ func TestLoadFromFile(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 100, cfg.WarnLedgers)
 	assert.EqualValues(t, 10, cfg.CriticalLedgers)
+	assert.Equal(t, "http://vault.internal:8080", cfg.SoroVaultURL)
 	// Unset keys keep their defaults.
 	assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
 }
@@ -108,6 +110,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 	t.Setenv(config.EnvTimeout, "90s")
 	t.Setenv(config.EnvWarnLedgers, "500")
 	t.Setenv(config.EnvCriticalLedgers, "50")
+	t.Setenv(config.EnvSoroVaultURL, "https://vault.example.com")
 	t.Chdir(t.TempDir())
 
 	cfg, err := config.Load("")
@@ -119,6 +122,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 	assert.Equal(t, 90*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 500, cfg.WarnLedgers)
 	assert.EqualValues(t, 50, cfg.CriticalLedgers)
+	assert.Equal(t, "https://vault.example.com", cfg.SoroVaultURL)
 	require.NoError(t, cfg.Validate())
 }
 
@@ -185,6 +189,7 @@ func TestValidate(t *testing.T) {
 		{"negative timeout", func(c *config.Config) { c.Timeout = -time.Second }, "timeout must be positive"},
 		{"critical above warn", func(c *config.Config) { c.WarnLedgers = 10; c.CriticalLedgers = 100 }, "must not exceed"},
 		{"unknown log level", func(c *config.Config) { c.LogLevel = "chatty" }, "unknown log level"},
+		{"sorovault url without scheme", func(c *config.Config) { c.SoroVaultURL = "localhost:8080" }, "sorovault url"},
 	}
 
 	for _, tt := range tests {

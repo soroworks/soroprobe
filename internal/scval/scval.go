@@ -133,6 +133,22 @@ func (r *Registry) EncodeAll(specs []string) ([]xdr.ScVal, error) {
 // Decode converts an ScVal into a JSON-marshalable Go value.
 func (r *Registry) Decode(v xdr.ScVal) (any, error) { return Decode(v) }
 
+// HasType reports whether spec names its type explicitly, either as a
+// registered "type:value" prefix or as a bare type name such as "void". A spec
+// for which HasType is false would be encoded by inference.
+func (r *Registry) HasType(spec string) bool {
+	if prefix, _, ok := splitSpec(spec); ok {
+		if _, found := r.encoders[prefix]; found {
+			return true
+		}
+	}
+	switch strings.ToLower(spec) {
+	case "void", "null":
+		return true
+	}
+	return false
+}
+
 // splitSpec separates a "type:value" spec. A bare token with no colon, or one
 // whose prefix contains characters that cannot start a type name, is not a spec.
 func splitSpec(spec string) (prefix, literal string, ok bool) {

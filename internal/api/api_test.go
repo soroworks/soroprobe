@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/api"
 	"github.com/soroworks/soroprobe/internal/probe"
 	"github.com/soroworks/soroprobe/internal/stellar/stellartest"
@@ -151,6 +153,35 @@ func TestSimulateEndpointBadRequests(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, rec.Code, "body was: %s", rec.Body.String())
 			assert.Contains(t, rec.Body.String(), "error")
 		})
+	}
+}
+
+// staticABI serves one interface for every contract.
+type staticABI struct{ iface *abi.Interface }
+
+func (s staticABI) Interface(context.Context, string, string) (*abi.Interface, error) {
+	return s.iface, nil
+}
+
+func TestSimulateEndpointInterfaceErrorsAreBadRequests(t *testing.T) {
+	t.Parallel()
+
+	p, err := probe.New(probe.Options{
+		Client:        stellartest.NewFake(t),
+		SourceAccount: stellartest.SourceAccount,
+		ABI: staticABI{&abi.Interface{Functions: []abi.Function{
+			{Name: "decimals", Outputs: []abi.Type{{Kind: "u32", Display: "u32"}}},
+		}}},
+	})
+	require.NoError(t, err)
+	h := api.New(api.Options{Prober: p}).Handler()
+
+	for name, body := range map[string]string{
+		"unknown function": `{"contract_id":"` + stellartest.SACContract + `","function":"decimal"}`,
+		"too many args":    `{"contract_id":"` + stellartest.SACContract + `","function":"decimals","args":["1"]}`,
+	} {
+		rec := do(t, h, http.MethodPost, "/v1/simulate", body, nil)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "%s: body was %s", name, rec.Body.String())
 	}
 }
 

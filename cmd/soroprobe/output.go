@@ -106,7 +106,18 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	bw := &bufWriter{w: w}
 
 	bw.printf("%s %s\n", s.bold("contract"), r.ContractID)
-	bw.printf("%s %s\n\n", s.bold("function"), r.Function)
+	if r.Signature != "" {
+		bw.printf("%s %s\n", s.bold("function"), r.Signature)
+	} else {
+		bw.printf("%s %s\n", s.bold("function"), r.Function)
+	}
+	if len(r.EncodedArgs) > 0 {
+		bw.printf("%s %s\n", s.bold("encoded "), strings.Join(r.EncodedArgs, " "))
+	}
+	if r.ABINote != "" {
+		bw.printf("%s\n", s.dim("note: "+r.ABINote))
+	}
+	bw.printf("\n")
 
 	if r.Success {
 		bw.printf("%s\n", s.green("SUCCESS  the call would succeed"))

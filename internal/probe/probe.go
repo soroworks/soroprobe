@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/soroworks/soroprobe/internal/scval"
 	"github.com/soroworks/soroprobe/internal/stellar"
@@ -21,6 +22,9 @@ type Prober struct {
 	source     string
 	thresholds health.Thresholds
 	log        *slog.Logger
+
+	abi     abi.Source
+	network string
 }
 
 // Options configures a Prober.
@@ -36,6 +40,14 @@ type Options struct {
 	Thresholds health.Thresholds
 	// Logger receives debug tracing. Defaults to a discarding logger.
 	Logger *slog.Logger
+
+	// ABI, when set, supplies contract interfaces used to type simulate
+	// arguments, so a bare "5" is encoded as whatever the function declares
+	// rather than an inferred i128. Optional.
+	ABI abi.Source
+	// Network is the label ABI lookups are filed under ("testnet",
+	// "public", ...). Only read when ABI is set.
+	Network string
 }
 
 // New builds a Prober.
@@ -61,6 +73,8 @@ func New(opts Options) (*Prober, error) {
 		source:     opts.SourceAccount,
 		thresholds: opts.Thresholds,
 		log:        opts.Logger,
+		abi:        opts.ABI,
+		network:    opts.Network,
 	}, nil
 }
 

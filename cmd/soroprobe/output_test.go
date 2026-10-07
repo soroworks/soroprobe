@@ -39,6 +39,34 @@ func TestRenderSimulateSuccess(t *testing.T) {
 	assert.Contains(t, out, "0.0012279 XLM")
 }
 
+func TestRenderSimulateShowsInterfaceTyping(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := renderSimulate(&buf, &probe.SimulateResult{
+		ContractID:  "CDLZ",
+		Function:    "set_limit",
+		Args:        []string{"5"},
+		Signature:   "fn set_limit(count: u32)",
+		EncodedArgs: []string{"u32:5"},
+		Success:     true,
+	})
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "fn set_limit(count: u32)")
+	assert.Contains(t, out, "u32:5")
+
+	buf.Reset()
+	err = renderSimulate(&buf, &probe.SimulateResult{
+		ContractID: "CDLZ",
+		Function:   "decimals",
+		ABINote:    "contract not found in the interface registry; argument types were inferred",
+		Success:    true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "note: contract not found")
+}
+
 func TestRenderSimulateFailureIndentsMultilineError(t *testing.T) {
 	t.Parallel()
 

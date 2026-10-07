@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/soroworks/soroprobe/internal/probe"
@@ -58,6 +59,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.Duration("timeout", 0, fmt.Sprintf("per-request RPC timeout (env %s)", config.EnvTimeout))
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
+	flags.String("sorovault-url", "", fmt.Sprintf("SoroVault registry used to type simulate arguments from the contract's interface (env %s)", config.EnvSoroVaultURL))
 	flags.BoolVar(&opts.jsonOut, "json", false, "emit JSON instead of human-readable output")
 
 	cmd.AddCommand(
@@ -100,6 +102,9 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("critical-ledgers") {
 		cfg.CriticalLedgers, _ = flags.GetUint32("critical-ledgers")
 	}
+	if flags.Changed("sorovault-url") {
+		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -121,6 +126,16 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 		return nil, nil, err
 	}
 
+	var source abi.Source
+	if o.cfg.SoroVaultURL != "" {
+		vault, err := abi.NewSoroVault(o.cfg.SoroVaultURL, nil, o.cfg.Timeout)
+		if err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+		source = vault
+	}
+
 	p, err := probe.New(probe.Options{
 		Client:        client,
 		SourceAccount: o.cfg.SourceAccount,
@@ -128,7 +143,9 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 			Warn:     o.cfg.WarnLedgers,
 			Critical: o.cfg.CriticalLedgers,
 		},
-		Logger: log,
+		Logger:  log,
+		ABI:     source,
+		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
 	})
 	if err != nil {
 		_ = client.Close()

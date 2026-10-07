@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/soroworks/soroprobe/internal/probe"
 )
@@ -119,6 +120,9 @@ func durabilityParam(r *http.Request) (health.Durability, error) {
 func statusForError(err error) int {
 	msg := err.Error()
 	switch {
+	case errors.Is(err, abi.ErrNoSuchFunction),
+		errors.Is(err, abi.ErrArgumentCount):
+		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),
 		strings.Contains(msg, "argument "),
 		strings.Contains(msg, "arg "),

@@ -2,11 +2,13 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
 	"github.com/stellar/go-stellar-sdk/xdr"
 
+	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/stellar"
 )
 
@@ -25,6 +27,16 @@ type SimulateResult struct {
 	ContractID string   `json:"contract_id"`
 	Function   string   `json:"function"`
 	Args       []string `json:"args,omitempty"`
+
+	// Signature is the function's declared signature, present when the
+	// arguments were typed from the contract's interface.
+	Signature string `json:"signature,omitempty"`
+	// EncodedArgs are the arguments as actually encoded, after typing from
+	// the interface. Present only when typing changed at least one.
+	EncodedArgs []string `json:"encoded_args,omitempty"`
+	// ABINote explains why an interface source was configured but not
+	// used, so a fallback to inference is visible rather than silent.
+	ABINote string `json:"abi_note,omitempty"`
 
 	// Success is true when the call would succeed.
 	Success bool `json:"success"`
@@ -64,7 +76,12 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		return nil, fmt.Errorf("a function name is required")
 	}
 
-	args, err := p.codec.EncodeAll(req.Args)
+	typed, err := p.typeArgs(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	args, err := p.codec.EncodeAll(typed.args)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +103,79 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		return nil, err
 	}
 
-	return p.buildSimulateResult(req, resp)
+	result, err := p.buildSimulateResult(req, resp)
+	if err != nil {
+		return nil, err
+	}
+	result.Signature = typed.signature
+	result.ABINote = typed.note
+	if typed.changed {
+		result.EncodedArgs = typed.args
+	}
+	return result, nil
+}
+
+// typedArgs is the outcome of typing a request's arguments.
+type typedArgs struct {
+	args      []string
+	signature string
+	note      string
+	changed   bool
+}
+
+// typeArgs types req.Args from the contract's interface when an ABI source
+// is configured.
+//
+// A contract the source does not know, or a source that cannot be reached,
+// falls back to inference with a note, because the probe is still worth
+// running. A function the interface does not export, or the wrong number of
+// arguments, is a definite error: the simulation could only fail, and less
+// helpfully.
+func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, error) {
+	out := typedArgs{args: req.Args}
+	if p.abi == nil {
+		return out, nil
+	}
+	typer, ok := p.codec.(interface{ HasType(string) bool })
+	if !ok {
+		// A custom codec with its own syntax: SoroProbe cannot tell which
+		// arguments already carry a type, so it does not rewrite any.
+		return out, nil
+	}
+
+	iface, err := p.abi.Interface(ctx, p.network, req.ContractID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if errors.Is(err, abi.ErrUnknownContract) {
+			out.note = "contract not found in the interface registry; argument types were inferred"
+		} else {
+			out.note = "interface registry unavailable; argument types were inferred: " + err.Error()
+		}
+		p.log.Debug("abi lookup failed", "contract", req.ContractID, "err", err)
+		return out, nil
+	}
+
+	fn, err := iface.Lookup(req.Function)
+	if err != nil {
+		return out, err
+	}
+
+	args, err := abi.Annotate(fn, req.Args, typer.HasType)
+	if err != nil {
+		return out, err
+	}
+
+	out.args = args
+	out.signature = fn.Signature()
+	for i := range args {
+		if args[i] != req.Args[i] {
+			out.changed = true
+			break
+		}
+	}
+	return out, nil
 }
 
 func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.SimulateTransactionResponse) (*SimulateResult, error) {

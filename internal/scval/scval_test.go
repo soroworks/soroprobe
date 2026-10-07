@@ -120,6 +120,25 @@ func TestEncodeInference(t *testing.T) {
 	}
 }
 
+func TestHasType(t *testing.T) {
+	t.Parallel()
+
+	codec := scval.NewRegistry()
+	for spec, want := range map[string]bool{
+		"u32:5":          true,
+		"SYM:transfer":   true,
+		"void":           true,
+		"NULL":           true,
+		"5":              false,
+		"transfer":       false,
+		"notatype:value": false,
+		"https://x.y":    false,
+		testAccount:      false,
+	} {
+		assert.Equal(t, want, codec.HasType(spec), spec)
+	}
+}
+
 func TestEncodeErrors(t *testing.T) {
 	t.Parallel()
 

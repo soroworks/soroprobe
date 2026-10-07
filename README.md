@@ -275,7 +275,8 @@ Runs the HTTP API. `--addr` overrides `HTTP_ADDR`.
 ### Global flags
 
 `--json`, `--config`, `--rpc-url`, `--network-passphrase`, `--source-account`,
-`--log-level`, `--timeout`, `--warn-ledgers`, `--critical-ledgers`.
+`--log-level`, `--timeout`, `--warn-ledgers`, `--critical-ledgers`,
+`--sorovault-url`.
 
 ## Argument encoding
 
@@ -309,6 +310,43 @@ otherwise.
 Prefer explicit prefixes. Bare integers infer `i128` because it is the widest
 common integer type in Soroban token interfaces, but a contract expecting `u32`
 will reject it with a confusing host error.
+
+### Typing arguments from SoroVault
+
+Inference is a guess. If you run a [SoroVault](https://github.com/soroworks/sorovault)
+registry, point SoroProbe at it and the guess goes away:
+
+```bash
+export SOROVAULT_URL=http://localhost:8080
+soroprobe simulate CDZZ... get_proposal 3
+```
+
+```
+contract CDZZ...
+function fn get_proposal(proposal_index: u32) -> Proposal
+encoded  u32:3
+```
+
+SoroProbe fetches the contract's interface from
+`GET /api/contracts/{id}?network=…` and, for each argument **without** an
+explicit prefix, uses the type the function declares — so `3` above is a
+`u32`, not an `i128`. An explicit prefix always wins. With the interface in
+hand SoroProbe also refuses, before simulating anything:
+
+- a function the contract does not export, listing the ones it does, and
+- the wrong number of arguments, quoting the signature.
+
+Both are input errors (exit 2 on the CLI, 400 from the API), because the
+simulation could only fail and its host error would be less helpful.
+
+If the contract is not in the registry, or the registry cannot be reached,
+SoroProbe falls back to inference and says so in a `note:` line (`abi_note`
+in JSON), rather than failing a probe that would otherwise work. The network
+is matched by passphrase, so a mainnet probe never picks up a testnet
+interface.
+
+Arguments whose declared type has no single-literal form — `Vec`, `Map`,
+tuples and user-defined types — are passed through unchanged.
 
 **Results** are decoded to JSON-friendly values. Integers wider than 32 bits
 become decimal **strings**, not JSON numbers — a `u64` or `i128` cannot survive
@@ -374,6 +412,7 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `RPC_TIMEOUT` | `--timeout` | `30s` |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |
 | `CRITICAL_LEDGERS` | `--critical-ledgers` | `17280` (≈1 day) |
+| `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
 | `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` if present |
 
 [.env.example](.env.example) documents every variable. SoroProbe reads the
@@ -420,6 +459,7 @@ internal/config   defaults, config file and environment resolution
 internal/stellar  Stellar RPC client behind an interface, ledger keys, tx building
   └── stellartest fixture-backed fake + the recorder that captures fixtures
 internal/scval    ScVal encode/decode behind an interface, with a type registry
+internal/abi      contract interfaces from SoroVault, used to type arguments
 internal/health   TTL interpretation: thresholds, statuses, durability semantics
 internal/probe    simulate / inspect / check orchestration
 internal/api      chi HTTP handlers mirroring the CLI
