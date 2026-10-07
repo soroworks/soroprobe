@@ -244,6 +244,49 @@ func renderCheck(w io.Writer, r *probe.CheckResult) error {
 	return bw.err
 }
 
+// renderBatch prints one line per check — its verdict and the first step
+// that did not pass — and a summary. The full per-step detail is in --json.
+func renderBatch(w io.Writer, r *probe.BatchResult) error {
+	s := styler{on: colorEnabled(w)}
+	bw := &bufWriter{w: w}
+
+	width := 4
+	for _, item := range r.Items {
+		width = max(width, len(item.Name))
+	}
+
+	passed, failed, errored := 0, 0, 0
+	for _, item := range r.Items {
+		var verdict, detail string
+		switch {
+		case item.Error != "":
+			errored++
+			verdict, detail = s.red("ERROR"), item.Error
+		case item.Result.OK:
+			passed++
+			verdict, detail = s.green("PASS "), firstNotPassing(item.Result, probe.OutcomeWarn)
+		default:
+			failed++
+			verdict, detail = s.red("FAIL "), firstNotPassing(item.Result, probe.OutcomeFail)
+		}
+		bw.printf("  %s  %-*s  %s\n", verdict, width, item.Name, detail)
+	}
+
+	bw.printf("\n%s %d passed, %d failed, %d could not run\n", s.bold("result"), passed, failed, errored)
+	return bw.err
+}
+
+// firstNotPassing describes the first step with the given outcome, or
+// returns "" when there is none.
+func firstNotPassing(r *probe.CheckResult, outcome probe.CheckOutcome) string {
+	for _, c := range r.Checks {
+		if c.Outcome == outcome {
+			return c.Name + ": " + c.Detail
+		}
+	}
+	return ""
+}
+
 // bufWriter records the first write error so renderers need not check each call.
 type bufWriter struct {
 	w   io.Writer

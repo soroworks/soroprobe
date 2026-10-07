@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -306,4 +307,47 @@ func TestMethodNotAllowed(t *testing.T) {
 
 	rec := do(t, h, http.MethodGet, "/v1/simulate", "", nil)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+func TestChecksEndpoint(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, stellartest.NewFake(t))
+
+	var body probe.BatchResult
+	rec := do(t, h, http.MethodPost, "/v1/checks", `{"checks": [
+		{"name": "native", "contract_id": "`+stellartest.SACContract+`", "function": "decimals"},
+		{"name": "gone", "contract_id": "`+stellartest.UndeployedContract+`"}
+	]}`, &body)
+
+	require.Equal(t, http.StatusOK, rec.Code, "an unhealthy contract is still a 200")
+	assert.False(t, body.OK)
+	assert.False(t, body.Errored)
+	require.Len(t, body.Items, 2)
+	assert.True(t, body.Items[0].Result.OK)
+	assert.False(t, body.Items[1].Result.OK)
+}
+
+func TestChecksEndpointBadRequests(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, stellartest.NewFake(t))
+
+	var many strings.Builder
+	many.WriteString(`{"checks": [`)
+	for i := 0; i < 21; i++ {
+		if i > 0 {
+			many.WriteString(",")
+		}
+		fmt.Fprintf(&many, `{"name": "c%d", "contract_id": "%s"}`, i, stellartest.SACContract)
+	}
+	many.WriteString("]}")
+
+	for name, body := range map[string]string{
+		"empty":         `{"checks": []}`,
+		"unknown field": `{"checks": [{"contract_id": "C", "fn": "x"}]}`,
+		"duplicate":     `{"checks": [{"name": "a", "contract_id": "C1"}, {"name": "a", "contract_id": "C2"}]}`,
+		"over the cap":  many.String(),
+	} {
+		rec := do(t, h, http.MethodPost, "/v1/checks", body, nil)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "%s: %s", name, rec.Body.String())
+	}
 }

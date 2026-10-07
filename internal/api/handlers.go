@@ -31,6 +31,39 @@ type simulateBody struct {
 	Args       []string `json:"args"`
 }
 
+// maxAPIBatchChecks is lower than probe.MaxBatchChecks because the whole
+// request shares one deadline (Options.Timeout, 60s by default) and checks
+// run sequentially, each costing a few RPC round trips. Larger batches
+// belong in the CLI, or split across requests.
+const maxAPIBatchChecks = 20
+
+// handleChecks serves POST /v1/checks: several checks in one request.
+func (s *Server) handleChecks(w http.ResponseWriter, r *http.Request) {
+	var body probe.BatchRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if len(body.Checks) > maxAPIBatchChecks {
+		writeError(w, http.StatusBadRequest, fmt.Errorf(
+			"%d checks exceeds the per-request limit of %d; split the batch or use `soroprobe check --file`",
+			len(body.Checks), maxAPIBatchChecks))
+		return
+	}
+
+	result, err := s.prober.CheckBatch(r.Context(), body)
+	if err != nil {
+		writeError(w, statusForError(err), err)
+		return
+	}
+
+	// As with a single check, an unhealthy contract — or one that could not
+	// be checked — is reported in the body ("ok", "errored") with a 200.
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	var body simulateBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
@@ -121,6 +154,7 @@ func statusForError(err error) int {
 	msg := err.Error()
 	switch {
 	case errors.Is(err, abi.ErrNoSuchFunction),
+		errors.Is(err, probe.ErrInvalidBatch),
 		errors.Is(err, abi.ErrArgumentCount):
 		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),

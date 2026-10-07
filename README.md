@@ -260,6 +260,31 @@ Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, the
 1 and 2 are kept distinct so a pipeline can tell "your contract is unhealthy"
 from "the tool broke".
 
+**Checking many contracts at once.** `--file` runs every check listed in a
+JSON file (`-` reads stdin), so one CI step can cover a whole deployment:
+
+```json
+{"checks": [
+  {"name": "token", "contract_id": "CDLZ…", "function": "decimals"},
+  {"name": "vault", "contract_id": "CCLV…", "data_keys": ["sym:Admin"]}
+]}
+```
+
+```
+$ soroprobe check --file checks.json
+  PASS   token  instance_ttl: live for 58912 more ledgers (~3.4 days, …)
+  FAIL   vault  code_ttl: expired at ledger 4038543
+
+result 1 passed, 1 failed, 0 could not run
+```
+
+Each entry takes `name` (defaults to the contract ID, and must be unique),
+`contract_id`, `function`, `args`, `data_keys` and `data_durability`. Unknown
+keys are rejected, so a typo cannot silently drop a step. Checks run one after
+another, to stay inside public RPC rate limits; one that cannot run is
+reported and the rest continue. The exit code is 2 if any check could not
+run, else 1 if any failed, else 0.
+
 A **TTL warning does not fail the check.** It is a signal to extend the entry,
 not a reason to break a build. Only `critical`, `expired` and `missing` fail.
 
@@ -402,6 +427,13 @@ Query parameters: `key` (repeatable), `durability`.
 ### `GET /v1/check/{contract}`
 
 Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`.
+
+### `POST /v1/checks`
+
+Several checks in one request — the same body `soroprobe check --file` reads.
+Returns `ok`, `errored`, and one item per check. Limited to 20 checks per
+request, because the request shares one deadline and checks run
+sequentially; split larger batches or use the CLI.
 
 ### Status codes
 

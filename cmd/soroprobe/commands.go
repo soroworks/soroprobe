@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -128,9 +130,10 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var callArgs []string
 	var dataKeys []string
 	var durability string
+	var file string
 
 	cmd := &cobra.Command{
-		Use:   "check <contract-id>",
+		Use:   "check <contract-id> | check --file <checks.json>",
 		Short: "Run a combined health check, exiting non-zero on failure",
 		Long: `Run a combined health check against a contract: confirm it is deployed, that
 its instance and code entries are live and not near expiration, and optionally
@@ -142,9 +145,32 @@ extend the entry, not a reason to break a pipeline.
 
 --fn is optional. SoroProbe cannot discover a contract's exported functions, and
 guessing one would produce a misleading failure, so the simulation step is
-reported as skipped unless a function is named.`,
-		Args: cobra.ExactArgs(1),
+reported as skipped unless a function is named.
+
+--file runs many checks at once, from a JSON file ("-" for stdin):
+
+  {"checks": [
+    {"name": "token", "contract_id": "C...", "function": "decimals"},
+    {"name": "vault", "contract_id": "C...", "data_keys": ["sym:Admin"]}
+  ]}
+
+Each entry takes name, contract_id, function, args, data_keys and
+data_durability — the same body POST /v1/checks accepts. With --file, the exit
+code is 2 if any check could not run, else 1 if any failed, else 0.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if file != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("give a contract ID or --file, not both")
+				}
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if file != "" {
+				return runCheckFile(cmd, opts, file)
+			}
+
 			d, err := parseDurability(durability)
 			if err != nil {
 				return err
@@ -188,7 +214,69 @@ reported as skipped unless a function is named.`,
 	cmd.Flags().StringArrayVar(&callArgs, "arg", nil, "argument for --fn, in type:value form (repeatable)")
 	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
+	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
 	return cmd
+}
+
+// runCheckFile runs a batch of checks read from path.
+func runCheckFile(cmd *cobra.Command, opts *options, path string) error {
+	req, err := readBatch(cmd.InOrStdin(), path)
+	if err != nil {
+		return err
+	}
+
+	p, cleanup, err := opts.prober()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	result, err := p.CheckBatch(cmd.Context(), req)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	if opts.jsonOut {
+		err = writeJSON(out, result)
+	} else {
+		err = renderBatch(out, result)
+	}
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case result.Errored:
+		// Returned as a plain error, so main exits with exitRuntime: the
+		// batch is incomplete and its verdict cannot be trusted.
+		return fmt.Errorf("one or more checks could not be run")
+	case !result.OK:
+		return &checkFailedError{msg: "one or more checks failed"}
+	}
+	return nil
+}
+
+// readBatch parses a check file. Unknown fields are rejected, so a typo such
+// as "fn" for "function" fails loudly instead of silently skipping a probe.
+func readBatch(stdin io.Reader, path string) (probe.BatchRequest, error) {
+	var r io.Reader = stdin
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return probe.BatchRequest{}, err
+		}
+		defer f.Close()
+		r = f
+	}
+
+	var req probe.BatchRequest
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return probe.BatchRequest{}, fmt.Errorf("read check file %s: %w", path, err)
+	}
+	return req, nil
 }
 
 func newServeCmd(opts *options) *cobra.Command {

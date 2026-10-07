@@ -288,3 +288,52 @@ func TestParseDurability(t *testing.T) {
 func TestResolveVersionAlwaysReturnsSomething(t *testing.T) {
 	assert.NotEmpty(t, resolveVersion())
 }
+
+func TestReadBatch(t *testing.T) {
+	t.Parallel()
+
+	req, err := readBatch(strings.NewReader(`{"checks": [
+		{"name": "token", "contract_id": "CDLZ", "function": "decimals", "args": ["u32:1"]},
+		{"contract_id": "CDEF", "data_keys": ["sym:Admin"], "data_durability": "temporary"}
+	]}`), "-")
+	require.NoError(t, err)
+	require.Len(t, req.Checks, 2)
+	assert.Equal(t, "token", req.Checks[0].Name)
+	assert.Equal(t, "decimals", req.Checks[0].Function)
+	assert.Equal(t, []string{"u32:1"}, req.Checks[0].Args)
+	assert.Equal(t, []string{"sym:Admin"}, req.Checks[1].DataKeys)
+	assert.EqualValues(t, "temporary", req.Checks[1].DataDurability)
+
+	// "fn" is the CLI flag name, not the file key; a typo must not silently
+	// drop the simulation step.
+	_, err = readBatch(strings.NewReader(`{"checks": [{"contract_id": "CDLZ", "fn": "decimals"}]}`), "-")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown field "fn"`)
+}
+
+func TestRenderBatch(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := renderBatch(&buf, &probe.BatchResult{
+		OK:      false,
+		Errored: true,
+		Items: []probe.BatchItem{
+			{Name: "token", Result: &probe.CheckResult{OK: true, Checks: []probe.Check{
+				{Name: "instance_ttl", Outcome: probe.OutcomeWarn, Detail: "live for 100 more ledgers"},
+			}}},
+			{Name: "vault", Result: &probe.CheckResult{OK: false, Checks: []probe.Check{
+				{Name: "deployed", Outcome: probe.OutcomePass, Detail: "instance found"},
+				{Name: "code_ttl", Outcome: probe.OutcomeFail, Detail: "expired"},
+			}}},
+			{Name: "broken", Error: "invalid contract id"},
+		},
+	})
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, "PASS   token   instance_ttl: live for 100 more ledgers")
+	assert.Contains(t, out, "FAIL   vault   code_ttl: expired")
+	assert.Contains(t, out, "ERROR  broken  invalid contract id")
+	assert.Contains(t, out, "1 passed, 1 failed, 1 could not run")
+}

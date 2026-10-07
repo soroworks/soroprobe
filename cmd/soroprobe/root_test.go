@@ -128,6 +128,8 @@ func TestCommandArgumentValidation(t *testing.T) {
 		{"inspect needs a contract", []string{"inspect"}},
 		{"inspect takes only one contract", []string{"inspect", "CDLZ", "CDEF"}},
 		{"check needs a contract", []string{"check"}},
+		{"check takes a contract or a file, not both", []string{"check", "CDLZ", "--file", "checks.json"}},
+		{"check --file must exist", []string{"check", "--file", "no-such-file.json"}},
 		{"serve takes no arguments", []string{"serve", "extra"}},
 	}
 

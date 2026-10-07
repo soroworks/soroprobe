@@ -64,6 +64,7 @@ func New(opts Options) *Server {
 		r.Post("/simulate", s.handleSimulate)
 		r.Get("/inspect/{contract}", s.handleInspect)
 		r.Get("/check/{contract}", s.handleCheck)
+		r.Post("/checks", s.handleChecks)
 	})
 
 	s.router = r
