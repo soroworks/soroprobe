@@ -1,5 +1,11 @@
 # SoroProbe
 
+[![CI](https://github.com/soroworks/soroprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/soroworks/soroprobe/actions/workflows/ci.yml)
+[![Security](https://github.com/soroworks/soroprobe/actions/workflows/security.yml/badge.svg)](https://github.com/soroworks/soroprobe/actions/workflows/security.yml)
+[![Release](https://img.shields.io/github/v/release/soroworks/soroprobe)](https://github.com/soroworks/soroprobe/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/soroworks/soroprobe)](go.mod)
+[![License](https://img.shields.io/github/license/soroworks/soroprobe)](LICENSE)
+
 A health and simulation checker for Stellar/Soroban smart contracts.
 
 Before you invoke a Soroban contract for real, you want to know three things:
