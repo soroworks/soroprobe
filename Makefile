@@ -44,6 +44,9 @@ vet: ## Run go vet
 tidy: ## Tidy go.mod and go.sum
 	$(GO) mod tidy
 
+.PHONY: check
+check: fmt vet test ## Format, vet and test — run before opening a PR
+
 .PHONY: fixtures
 fixtures: ## Re-record test fixtures from the live testnet
 	$(GO) run ./internal/stellar/stellartest/record
