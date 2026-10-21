@@ -35,6 +35,11 @@ Collections are JSON; each string element is itself an argument spec, and a
 JSON number, true, false or null is a bare literal. Write map keys in
 ascending order: Soroban rejects an unsorted map.
 
+A token amount can be written as a decimal with the token's decimal count
+after an "@": i128:10.5@7 is 10.5 tokens of a 7-decimal token, encoded as
+105000000. The conversion is exact, and an amount with more fractional digits
+than the token has decimals is rejected rather than rounded.
+
 A bare value with no prefix is inferred: "true" and "false" become bool, "void"
 and "null" become void, a valid G... or C... address becomes an address, a run
 of digits becomes i128, and anything else becomes a symbol if it fits Soroban's

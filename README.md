@@ -391,7 +391,7 @@ soroprobe simulate CDLZ... transfer \
 | `void`, `null` | `void` |
 | `u32`, `i32` | `u32:5`, `i32:-5` |
 | `u64`, `i64` | `u64:100` |
-| `u128`, `i128` | `i128:-10000000` |
+| `u128`, `i128` | `i128:-10000000`, `i128:10.5@7` |
 | `u256`, `i256` | `u256:12345` |
 | `timepoint`, `duration` | `timepoint:1700000000` |
 | `sym`, `symbol` | `sym:transfer` |
@@ -400,6 +400,34 @@ soroprobe simulate CDLZ... transfer \
 | `addr`, `address` | `addr:GABC...`, `addr:CDEF...` |
 | `vec` | `vec:["u32:1","u32:2"]`, `vec:[1, 2]` |
 | `map` | `map:[["sym:a","u32:1"],["sym:b","u32:2"]]` |
+
+### Token amounts
+
+Token functions take amounts in **base units**, so 10 XLM-equivalent of a
+7-decimal token is `100000000`, and miscounting the zeros sends the wrong
+amount to a simulation. An integer argument can carry a decimal scale, written
+as an `@` followed by the token's decimal count:
+
+```bash
+soroprobe simulate CDLZ... transfer addr:GABC... addr:CDEF... i128:10.5@7
+```
+
+| Argument | Means | Encoded as |
+| --- | --- | --- |
+| `i128:10.5@7` | 10.5 tokens of a 7-decimal token | `105000000` |
+| `i128:10@7` | 10 tokens of a 7-decimal token | `100000000` |
+| `i128:-2.5@7` | minus 2.5 tokens | `-25000000` |
+| `i128:0.0000001@7` | one base unit | `1` |
+| `i128:10000000` | 10000000 base units, unscaled | `10000000` |
+
+The conversion is **exact**: the integer and fractional parts are scaled with
+integer arithmetic, never with floating point, so no amount is ever off by a
+rounding error. An amount with more fractional digits than the token has
+decimals — `i128:10.12345@2` — is **rejected** rather than rounded, because a
+rounded amount is a different amount. Negative amounts and zero work.
+
+The scale is part of the argument, so it needs a type prefix: a bare `10.5@7`
+is not an amount, it is a string.
 
 **Collections** are written as JSON, the one nesting syntax that survives a
 shell intact — quote the whole argument:
