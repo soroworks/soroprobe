@@ -274,9 +274,34 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 		bw.printf("  %s\n", string(encoded))
 	}
 
+	if len(r.ExtendEstimates) > 0 {
+		renderExtendEstimates(bw, s, r.ExtendEstimates)
+	}
+
 	bw.printf("\n%s %s\n", s.bold("overall"), s.status(r.Status))
 	bw.printf("%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderExtendEstimates prints what it would cost to keep each entry alive.
+//
+// An entry that cannot be extended says so instead of quoting a price: a
+// number for an entry that is not there would be worse than no number.
+func renderExtendEstimates(bw *bufWriter, s styler, estimates []probe.ExtendEstimate) {
+	bw.printf("\n%s %s\n", s.bold("cost to extend"), s.dim("(simulated; nothing is submitted)"))
+	for _, e := range estimates {
+		label := e.Kind
+		if e.Key != "" {
+			label = e.Kind + " " + e.Key
+		}
+		if e.Note != "" {
+			bw.printf("  %-22s %s\n", label, s.dim(e.Note))
+			continue
+		}
+		bw.printf("  %-22s %s  %s\n", label,
+			stroops(e.ResourceFee),
+			s.dim(fmt.Sprintf("to ledger %d, %d ledgers", e.ExtendTo, e.Ledgers)))
+	}
 }
 
 func renderEntry(bw *bufWriter, s styler, label string, e probe.EntryReport) {

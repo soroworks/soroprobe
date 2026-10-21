@@ -265,6 +265,32 @@ func TestInspectEndpointRejectsUnknownDurability(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestInspectEndpointEstimatesTheExtendFee(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	var result probe.InspectResult
+	rec := do(t, h, http.MethodGet,
+		"/v1/inspect/"+stellartest.SACContract+"?estimate_extend=1000000", "", &result)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, result.ExtendEstimates, 1)
+	assert.Equal(t, "instance", result.ExtendEstimates[0].Kind)
+	assert.EqualValues(t, 1000000, result.ExtendEstimates[0].Ledgers)
+	assert.Positive(t, result.ExtendEstimates[0].ResourceFee)
+}
+
+func TestInspectEndpointRejectsABadExtendCount(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	rec := do(t, h, http.MethodGet,
+		"/v1/inspect/"+stellartest.SACContract+"?estimate_extend=lots", "", nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestInspectEndpointInvalidContract(t *testing.T) {
 	t.Parallel()
 

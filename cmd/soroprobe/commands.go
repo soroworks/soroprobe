@@ -214,6 +214,7 @@ func newInspectCmd(opts *options) *cobra.Command {
 	var keyFile string
 	var durability string
 	var reportPath string
+	var estimateExtend uint32
 
 	cmd := &cobra.Command{
 		Use:   "inspect <contract-id>",
@@ -230,6 +231,11 @@ depend on.
 too many entries for a command line. Keys from the file and from --key are
 combined; an invalid line is reported with its line number before any request
 is sent.
+
+--estimate-extend prices keeping the contract's entries alive: it simulates
+an extension of each reported entry and reports what it would cost. Nothing
+is submitted, and an entry that cannot be extended — because it is missing or
+has already expired — says so instead of quoting a price.
 
 ` + argHelp,
 		Args: cobra.ExactArgs(1),
@@ -260,6 +266,7 @@ is sent.
 				ContractID:     args[0],
 				DataKeys:       keys,
 				DataDurability: d,
+				EstimateExtend: estimateExtend,
 			})
 			if err != nil {
 				return err
@@ -280,6 +287,8 @@ is sent.
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys to inspect, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
+	cmd.Flags().Uint32Var(&estimateExtend, "estimate-extend", 0,
+		"also price extending each reported entry's TTL by this many ledgers")
 	return cmd
 }
 

@@ -288,6 +288,7 @@ Reads the contract's instance and code entries and reports expiration health.
 | `--key <spec>` | A contract data key to inspect, in `type:value` form. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Blank lines and `#` comment lines are ignored. |
 | `--durability <d>` | Durability for `--key` lookups: `persistent` (default) or `temporary`. |
+| `--estimate-extend <ledgers>` | Also price extending each reported entry's TTL by this many ledgers. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 Stellar RPC reads ledger entries **by key** and offers no way to enumerate the
@@ -312,6 +313,36 @@ $ soroprobe inspect C… --key-file keys.txt
 Keys from the file and from `--key` are combined, duplicates dropped, and an
 invalid line fails immediately — reported with its line number, before any
 request is sent.
+
+**What keeping it alive costs.** Knowing an entry expires in two days is half
+the answer; the other half is what keeping it alive costs. `--estimate-extend`
+simulates an extension of each reported entry and reports the fee:
+
+```
+$ soroprobe inspect CDLZ… --estimate-extend 1209600
+contract CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+
+executable stellar_asset
+
+state entries
+  instance   OK       healthy
+             live for 1012931 more ledgers (~58.7 days, until ledger 5027056)
+  code       n/a  built into the host, no code entry
+
+cost to extend (simulated; nothing is submitted)
+  instance               6128 stroops (0.0006128 XLM)  to ledger 5223725, 1209600 ledgers
+
+overall OK       healthy
+```
+
+The extension is only ever **simulated** — nothing is submitted, and the
+placeholder source account is enough. Each entry is priced on its own, with a
+footprint holding that entry alone, so the fee is the fee for the entry you
+are looking at.
+
+An entry that **cannot** be extended says so instead of quoting a price: a
+missing entry has nothing to extend, and an expired one must be restored
+before it can be extended.
 
 ### `soroprobe check <contract-id>`
 
@@ -589,7 +620,10 @@ call that was never made.
 
 ### `GET /v1/inspect/{contract}`
 
-Query parameters: `key` (repeatable), `durability`.
+Query parameters: `key` (repeatable), `durability`, `estimate_extend`.
+
+`estimate_extend` prices the extension of each reported entry's TTL by that
+many ledgers, exactly as `inspect --estimate-extend` does.
 
 ### `GET /v1/check/{contract}`
 

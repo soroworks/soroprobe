@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -107,16 +108,37 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	estimateExtend, err := estimateExtendParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	result, err := s.prober.Inspect(r.Context(), probe.InspectRequest{
 		ContractID:     chi.URLParam(r, "contract"),
 		DataKeys:       r.URL.Query()["key"],
 		DataDurability: durability,
+		EstimateExtend: estimateExtend,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// estimateExtendParam reads the number of ledgers to price an extension for.
+// Zero means no estimate was asked for.
+func estimateExtendParam(r *http.Request) (uint32, error) {
+	raw := r.URL.Query().Get("estimate_extend")
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("estimate_extend must be a number of ledgers, got %q", raw)
+	}
+	return uint32(value), nil
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
