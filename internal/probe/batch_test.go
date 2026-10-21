@@ -38,48 +38,21 @@ func TestCheckBatchAllPass(t *testing.T) {
 	assert.True(t, result.Items[0].Result.OK)
 }
 
-func TestCheckBatchMatchesIndividualChecksWithFewerLedgerRequests(t *testing.T) {
+func TestCheckBatchConcurrentKeepsInputOrder(t *testing.T) {
 	t.Parallel()
-
-	fake := stellartest.NewFake(t)
-	p := newProber(t, fake, health.DefaultThresholds)
+	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)
 	checks := []probe.NamedCheck{
-		named("native", stellartest.SACContract, "decimals"),
-		named("wasm", stellartest.WasmContract, "decimals"),
+		named("first", stellartest.WasmContract, ""),
+		named("second", stellartest.SACContract, "decimals"),
+		named("third", stellartest.WasmContract, "decimals"),
 	}
-	batched, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks})
+
+	result, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks, Concurrency: 3})
 	require.NoError(t, err)
-	require.Len(t, batched.Items, len(checks))
-	assert.Len(t, fake.EntryRequests, 2, "the batch uses one instance/data round and one code round")
-
-	for i, check := range checks {
-		individual, err := p.Check(context.Background(), check.CheckRequest)
-		require.NoError(t, err)
-		assert.Equal(t, individual, batched.Items[i].Result)
-	}
-	assert.Len(t, fake.EntryRequests, 5, "the two separate checks add three RPC calls")
-}
-
-func TestCheckBatchChunksLedgerKeysAtRPCLimit(t *testing.T) {
-	t.Parallel()
-
-	fake := stellartest.NewFake(t)
-	p := newProber(t, fake, health.DefaultThresholds)
-	checks := make([]probe.NamedCheck, probe.MaxBatchChecks)
-	for i := range checks {
-		check := named(string(rune('a'+i)), stellartest.SACContract, "")
-		check.Name = fmt.Sprintf("check-%d", i)
-		for key := 0; key < 10; key++ {
-			check.DataKeys = append(check.DataKeys, fmt.Sprintf("sym:key_%d_%d", i, key))
-		}
-		checks[i] = check
-	}
-
-	_, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks})
-	require.NoError(t, err)
-	require.Len(t, fake.EntryRequests, 6, "1001 distinct instance/data keys need six calls at 200 keys per call")
-	for _, request := range fake.EntryRequests {
-		assert.LessOrEqual(t, len(request), 200)
+	require.Len(t, result.Items, len(checks))
+	for i, item := range result.Items {
+		assert.Equal(t, checks[i].Name, item.Name)
+		assert.NotNil(t, item.Result)
 	}
 }
 

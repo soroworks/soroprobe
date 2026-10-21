@@ -49,22 +49,17 @@ const (
 
 // Environment variable names.
 const (
-	EnvRPCURL                  = "RPC_URL"
-	EnvNetworkPassphrase       = "NETWORK_PASSPHRASE"
-	EnvSourceAccount           = "SOURCE_ACCOUNT"
-	EnvHTTPAddr                = "HTTP_ADDR"
-	EnvLogLevel                = "LOG_LEVEL"
-	EnvTimeout                 = "RPC_TIMEOUT"
-	EnvWarnLedgers             = "WARN_LEDGERS"
-	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
-	EnvInstanceWarnLedgers     = "INSTANCE_WARN_LEDGERS"
-	EnvInstanceCriticalLedgers = "INSTANCE_CRITICAL_LEDGERS"
-	EnvCodeWarnLedgers         = "CODE_WARN_LEDGERS"
-	EnvCodeCriticalLedgers     = "CODE_CRITICAL_LEDGERS"
-	EnvDataWarnLedgers         = "DATA_WARN_LEDGERS"
-	EnvDataCriticalLedgers     = "DATA_CRITICAL_LEDGERS"
-	EnvConfigFile              = "SOROPROBE_CONFIG"
-	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvRPCURL            = "RPC_URL"
+	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
+	EnvSourceAccount     = "SOURCE_ACCOUNT"
+	EnvHTTPAddr          = "HTTP_ADDR"
+	EnvCORSOrigins       = "CORS_ORIGINS"
+	EnvLogLevel          = "LOG_LEVEL"
+	EnvTimeout           = "RPC_TIMEOUT"
+	EnvWarnLedgers       = "WARN_LEDGERS"
+	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
+	EnvConfigFile        = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL      = "SOROVAULT_URL"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -78,6 +73,8 @@ type Config struct {
 	SourceAccount string `json:"source_account"`
 	// HTTPAddr is the listen address for the HTTP API.
 	HTTPAddr string `json:"http_addr"`
+	// CORSOrigins is the exact-origin allow-list for the HTTP API.
+	CORSOrigins []string `json:"-"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `json:"log_level"`
 	// Timeout bounds a single RPC request.
@@ -195,6 +192,14 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NetworkPassphrase, lookup(EnvNetworkPassphrase))
 	setString(&cfg.SourceAccount, lookup(EnvSourceAccount))
 	setString(&cfg.HTTPAddr, lookup(EnvHTTPAddr))
+	if origins := lookup(EnvCORSOrigins); origins != nil {
+		cfg.CORSOrigins = nil
+		for _, origin := range strings.Split(*origins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				cfg.CORSOrigins = append(cfg.CORSOrigins, origin)
+			}
+		}
+	}
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
 
