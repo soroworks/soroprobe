@@ -4,6 +4,8 @@ package main
 
 // Wave: keep assigned probe checks grouped for Cjay-Cyber-2.
 
+// Wave: keep assigned probe checks grouped for privyy-bit.
+
 import (
 	"context"
 	"errors"
