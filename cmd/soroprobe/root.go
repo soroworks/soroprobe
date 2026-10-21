@@ -24,9 +24,10 @@ const (
 
 // options holds everything the persistent flags can set.
 type options struct {
-	cfg        config.Config
-	configPath string
-	jsonOut    bool
+	cfg          config.Config
+	configPath   string
+	jsonOut      bool
+	abiFromChain bool
 }
 
 func newRootCmd() (*cobra.Command, *options) {
@@ -60,7 +61,14 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.Duration("timeout", 0, fmt.Sprintf("per-request RPC timeout (env %s)", config.EnvTimeout))
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
+	flags.Uint32("instance-warn-ledgers", 0, "warning threshold for instance entries")
+	flags.Uint32("instance-critical-ledgers", 0, "critical threshold for instance entries")
+	flags.Uint32("code-warn-ledgers", 0, "warning threshold for code entries")
+	flags.Uint32("code-critical-ledgers", 0, "critical threshold for code entries")
+	flags.Uint32("data-warn-ledgers", 0, "warning threshold for data entries")
+	flags.Uint32("data-critical-ledgers", 0, "critical threshold for data entries")
 	flags.String("sorovault-url", "", fmt.Sprintf("SoroVault registry used to type simulate arguments from the contract's interface (env %s)", config.EnvSoroVaultURL))
+	flags.BoolVar(&opts.abiFromChain, "abi-from-chain", false, "type simulate arguments from the contract interface stored on chain")
 	flags.BoolVar(&opts.jsonOut, "json", false, "emit JSON instead of human-readable output")
 
 	cmd.AddCommand(
@@ -103,6 +111,46 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("critical-ledgers") {
 		cfg.CriticalLedgers, _ = flags.GetUint32("critical-ledgers")
 	}
+	for _, item := range []struct {
+		flag  string
+		kind  health.EntryKind
+		field string
+	}{
+		{"instance-warn-ledgers", health.EntryKindInstance, "warn"},
+		{"instance-critical-ledgers", health.EntryKindInstance, "critical"},
+		{"code-warn-ledgers", health.EntryKindCode, "warn"},
+		{"code-critical-ledgers", health.EntryKindCode, "critical"},
+		{"data-warn-ledgers", health.EntryKindData, "warn"},
+		{"data-critical-ledgers", health.EntryKindData, "critical"},
+	} {
+		if !flags.Changed(item.flag) {
+			continue
+		}
+		value, _ := flags.GetUint32(item.flag)
+		var override *health.ThresholdOverride
+		switch item.kind {
+		case health.EntryKindInstance:
+			if cfg.ThresholdOverrides.Instance == nil {
+				cfg.ThresholdOverrides.Instance = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Instance
+		case health.EntryKindCode:
+			if cfg.ThresholdOverrides.Code == nil {
+				cfg.ThresholdOverrides.Code = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Code
+		default:
+			if cfg.ThresholdOverrides.Data == nil {
+				cfg.ThresholdOverrides.Data = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Data
+		}
+		if item.field == "warn" {
+			override.Warn = &value
+		} else {
+			override.Critical = &value
+		}
+	}
 	if flags.Changed("sorovault-url") {
 		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
 	}
@@ -128,7 +176,9 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 	}
 
 	var source abi.Source
-	if o.cfg.SoroVaultURL != "" {
+	if o.abiFromChain {
+		source = abi.NewChainSource(client)
+	} else if o.cfg.SoroVaultURL != "" {
 		vault, err := abi.NewSoroVault(o.cfg.SoroVaultURL, nil, o.cfg.Timeout)
 		if err != nil {
 			_ = client.Close()
@@ -144,9 +194,10 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 			Warn:     o.cfg.WarnLedgers,
 			Critical: o.cfg.CriticalLedgers,
 		},
-		Logger:  log,
-		ABI:     source,
-		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
+		ThresholdOverrides: o.cfg.ThresholdOverrides,
+		Logger:             log,
+		ABI:                source,
+		Network:            abi.NetworkName(o.cfg.NetworkPassphrase),
 	})
 	if err != nil {
 		_ = client.Close()
