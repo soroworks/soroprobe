@@ -235,6 +235,8 @@ value, resource cost and ledger footprint.
 | --- | --- |
 | `--file <path>` | Simulate named calls from a JSON file (`-` reads stdin). |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
+| `--baseline <path>` | Compare the cost against a saved simulation report (a previous `--json` output). |
+| `--max-increase <pct>` | Fail (exit 1) when a cost figure grows by more than this percentage. |
 
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
@@ -244,6 +246,38 @@ function, args}` entries. Calls run sequentially; a call that cannot run is
 reported and does not prevent later calls from running. Text output includes
 the name, success, a truncated return value, instructions and fee; `--json`
 returns the complete results. Unknown JSON fields are rejected.
+
+**Cost against a baseline.** Absolute cost budgets need someone to pick
+numbers. Often the useful question is relative: did this change make the call
+more expensive than it was on `main`? Save a report and compare against it:
+
+```
+$ soroprobe simulate CDLZ… transfer … --json > baseline.json
+$ soroprobe simulate CDLZ… transfer … --baseline baseline.json
+…
+cost compared to the baseline
+  cpu instructions       127569 -> 131072  (+3503, +2.7%)
+  disk read bytes        0 -> 0            (+0, n/a)
+  write bytes            0 -> 0            (+0, n/a)
+  resource fee (stroops) 12279 -> 13000    (+721, +5.9%)
+```
+
+The baseline must be for the **same contract and function**; a report for a
+different call is rejected rather than compared, because its costs describe a
+call that was never made.
+
+`--max-increase` turns the comparison into a gate. The command exits **1** when
+any cost figure grows by more than the threshold, which is what a CI job wants:
+
+```
+$ soroprobe simulate CDLZ… transfer … --baseline baseline.json --max-increase 10%
+error: the cost grew by more than 10%
+```
+
+The percentage sign is optional, so `10` and `10%` mean the same thing. A
+figure that grew from a baseline of zero has no percentage to compare
+against, so it counts as an increase however large the threshold is: from
+nothing to something is not a small change.
 
 ### `soroprobe inspect <contract-id>`
 
@@ -536,6 +570,22 @@ curl -s localhost:8080/v1/simulate -d '{
   "args": []
 }' | jq
 ```
+
+Optional `baseline` and `max_increase_percent` compare the cost against a saved
+report, exactly as `simulate --baseline` does. The baseline has the shape of a
+`--json` report:
+
+```bash
+curl -s localhost:8080/v1/simulate -d '{
+  "contract_id": "CDLZ…",
+  "function": "decimals",
+  "baseline": {"contract_id": "CDLZ…", "function": "decimals", "cost": {"instructions": 127569}},
+  "max_increase_percent": 10
+}' | jq
+```
+
+A baseline for a different contract or function is a **400**: it describes a
+call that was never made.
 
 ### `GET /v1/inspect/{contract}`
 

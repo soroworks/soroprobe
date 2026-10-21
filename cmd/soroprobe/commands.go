@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,8 @@ is handed an inferred i128.`
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var file string
+	var baselinePath string
+	var maxIncrease string
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -64,11 +67,26 @@ Nothing is submitted and no signing takes place.
 name, contract_id, function and optional args. Calls run sequentially and
 individual errors do not stop later calls.
 
+--baseline compares the cost against a saved report — a previous --json
+output — and prints each figure with its change in absolute and percentage
+terms. The baseline must be for the same contract and function; a report for
+a different call is rejected rather than compared.
+
+--max-increase sets the largest increase in any cost figure that is
+tolerated, as a percentage ("10%"). When a figure grows by more than that,
+the command exits 1.
+
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract call or --file, not both")
+				}
+				if baselinePath != "" {
+					return fmt.Errorf("--baseline compares one call, so it cannot be used with --file")
+				}
+				if maxIncrease != "" {
+					return fmt.Errorf("--max-increase compares one call, so it cannot be used with --file")
 				}
 				return nil
 			}
@@ -85,6 +103,15 @@ individual errors do not stop later calls.
 				return runSimulateFile(cmd, opts, file, report)
 			}
 
+			baseline, err := readBaseline(baselinePath)
+			if err != nil {
+				return err
+			}
+			threshold, err := parseMaxIncrease(maxIncrease, baseline != nil)
+			if err != nil {
+				return err
+			}
+
 			p, cleanup, err := opts.prober()
 			if err != nil {
 				return err
@@ -92,9 +119,11 @@ individual errors do not stop later calls.
 			defer cleanup()
 
 			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
-				ContractID: args[0],
-				Function:   args[1],
-				Args:       args[2:],
+				ContractID:         args[0],
+				Function:           args[1],
+				Args:               args[2:],
+				Baseline:           baseline,
+				MaxIncreasePercent: threshold,
 			})
 			if err != nil {
 				return err
@@ -105,15 +134,79 @@ individual errors do not stop later calls.
 			}
 
 			if opts.jsonOut {
-				return writeJSON(cmd.OutOrStdout(), result)
+				err = writeJSON(cmd.OutOrStdout(), result)
+			} else {
+				err = renderSimulate(cmd.OutOrStdout(), result)
 			}
-			return renderSimulate(cmd.OutOrStdout(), result)
+			if err != nil {
+				return err
+			}
+
+			// The report is written before the verdict, so a run that trips
+			// the threshold still leaves its numbers behind.
+			if result.Comparison != nil && result.Comparison.Exceeded {
+				return &checkFailedError{msg: fmt.Sprintf(
+					"the cost grew by more than %s", formatPercent(*result.Comparison.MaxIncreasePercent))}
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
+	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
+	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	return cmd
+}
+
+// readBaseline reads a saved simulation report to compare a cost against.
+//
+// The file is a previous --json output, so it holds more fields than the
+// baseline needs; the rest are ignored rather than rejected, because the
+// report is a document SoroProbe wrote and not a form the user fills in.
+func readBaseline(path string) (*probe.Baseline, error) {
+	if path == "" {
+		return nil, nil
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read baseline %s: %w", path, err)
+	}
+
+	var baseline probe.Baseline
+	if err := json.Unmarshal(raw, &baseline); err != nil {
+		return nil, fmt.Errorf("parse baseline %s: %w", path, err)
+	}
+	return &baseline, nil
+}
+
+// parseMaxIncrease parses the --max-increase threshold.
+//
+// The percentage sign is optional, so "10" and "10%" mean the same thing, and
+// the threshold is only meaningful alongside a baseline.
+func parseMaxIncrease(s string, hasBaseline bool) (*float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	if !hasBaseline {
+		return nil, fmt.Errorf("--max-increase needs --baseline, which is what it compares against")
+	}
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return nil, fmt.Errorf("expected a percentage, got %q", s)
+	}
+	if value < 0 {
+		return nil, fmt.Errorf("a percentage cannot be negative, got %q", s)
+	}
+	return &value, nil
+}
+
+// formatPercent renders a percentage threshold.
+func formatPercent(v float64) string {
+	return fmt.Sprintf("%g%%", v)
 }
 
 func newInspectCmd(opts *options) *cobra.Command {

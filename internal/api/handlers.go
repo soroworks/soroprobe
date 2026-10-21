@@ -29,6 +29,12 @@ type simulateBody struct {
 	ContractID string   `json:"contract_id"`
 	Function   string   `json:"function"`
 	Args       []string `json:"args"`
+	// Baseline is a saved simulation report to compare the cost against.
+	// It has the shape a --json report has.
+	Baseline *probe.Baseline `json:"baseline,omitempty"`
+	// MaxIncreasePercent is the largest tolerated percentage increase in any
+	// cost figure. It only has an effect alongside a baseline.
+	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
 }
 
 // maxAPIBatchChecks is lower than probe.MaxBatchChecks because the whole
@@ -78,9 +84,11 @@ func (s *Server) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.prober.Simulate(r.Context(), probe.SimulateRequest{
-		ContractID: body.ContractID,
-		Function:   body.Function,
-		Args:       body.Args,
+		ContractID:         body.ContractID,
+		Function:           body.Function,
+		Args:               body.Args,
+		Baseline:           body.Baseline,
+		MaxIncreasePercent: body.MaxIncreasePercent,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
@@ -155,7 +163,8 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, abi.ErrNoSuchFunction),
 		errors.Is(err, probe.ErrInvalidBatch),
-		errors.Is(err, abi.ErrArgumentCount):
+		errors.Is(err, abi.ErrArgumentCount),
+		errors.Is(err, probe.ErrBaselineMismatch):
 		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),
 		strings.Contains(msg, "argument "),

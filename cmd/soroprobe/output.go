@@ -155,6 +155,10 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		}
 	}
 
+	if r.Comparison != nil {
+		renderCostComparison(bw, s, r.Comparison)
+	}
+
 	if r.RestoreRequired != nil {
 		bw.printf("\n%s\n", s.red("RESTORE REQUIRED"))
 		bw.printf("  This call touches archived entries. They must be restored before it\n")
@@ -167,6 +171,27 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 
 	bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated against ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderCostComparison prints each cost figure with its change against the
+// baseline, in absolute and percentage terms.
+//
+// The percentage is omitted rather than guessed at when the baseline figure
+// was zero: there is no percentage change from nothing, and inventing one
+// would make an increase look smaller than it is.
+func renderCostComparison(bw *bufWriter, s styler, c *probe.CostComparison) {
+	bw.printf("\n%s\n", s.bold("cost compared to the baseline"))
+	for _, f := range c.Figures {
+		percent := "n/a"
+		if f.Percent != nil {
+			percent = fmt.Sprintf("%+.1f%%", *f.Percent)
+		}
+		bw.printf("  %-22s %d -> %d  (%+d, %s)\n", f.Name, f.Baseline, f.Current, f.Delta, percent)
+	}
+	if c.Exceeded && c.MaxIncreasePercent != nil {
+		bw.printf("  %s\n", s.red(fmt.Sprintf(
+			"a cost figure grew by more than %s", formatPercent(*c.MaxIncreasePercent))))
+	}
 }
 
 func renderSimulateBatch(w io.Writer, r *probe.SimulateBatchResult) error {
