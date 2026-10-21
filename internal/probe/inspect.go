@@ -219,7 +219,7 @@ func (p *Prober) estimateExtends(ctx context.Context, contract xdr.ScAddress, wa
 	targets := []extendTarget{
 		{kind: "instance", key: stellar.InstanceKey(contract), ttl: result.Instance.TTL},
 	}
-	if wasmHash != nil {
+	if wasmHash != nil && result.Code != nil {
 		targets = append(targets, extendTarget{kind: "code", key: stellar.CodeKey(*wasmHash), ttl: result.Code.TTL})
 	}
 	for i, dk := range dataKeys {
