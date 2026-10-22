@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,11 @@ Collections are JSON; each string element is itself an argument spec, and a
 JSON number, true, false or null is a bare literal. Write map keys in
 ascending order: Soroban rejects an unsorted map.
 
+A token amount can be written as a decimal with the token's decimal count
+after an "@": i128:10.5@7 is 10.5 tokens of a 7-decimal token, encoded as
+105000000. The conversion is exact, and an amount with more fractional digits
+than the token has decimals is rejected rather than rounded.
+
 A bare value with no prefix is inferred: "true" and "false" become bool, "void"
 and "null" become void, a valid G... or C... address becomes an address, a run
 of digits becomes i128, and anything else becomes a symbol if it fits Soroban's
@@ -46,6 +52,8 @@ is handed an inferred i128.`
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var file string
+	var baselinePath string
+	var maxIncrease string
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -59,11 +67,26 @@ Nothing is submitted and no signing takes place.
 name, contract_id, function and optional args. Calls run sequentially and
 individual errors do not stop later calls.
 
+--baseline compares the cost against a saved report — a previous --json
+output — and prints each figure with its change in absolute and percentage
+terms. The baseline must be for the same contract and function; a report for
+a different call is rejected rather than compared.
+
+--max-increase sets the largest increase in any cost figure that is
+tolerated, as a percentage ("10%"). When a figure grows by more than that,
+the command exits 1.
+
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract call or --file, not both")
+				}
+				if baselinePath != "" {
+					return fmt.Errorf("--baseline compares one call, so it cannot be used with --file")
+				}
+				if maxIncrease != "" {
+					return fmt.Errorf("--max-increase compares one call, so it cannot be used with --file")
 				}
 				return nil
 			}
@@ -80,6 +103,15 @@ individual errors do not stop later calls.
 				return runSimulateFile(cmd, opts, file, report)
 			}
 
+			baseline, err := readBaseline(baselinePath)
+			if err != nil {
+				return err
+			}
+			threshold, err := parseMaxIncrease(maxIncrease, baseline != nil)
+			if err != nil {
+				return err
+			}
+
 			p, cleanup, err := opts.prober()
 			if err != nil {
 				return err
@@ -87,9 +119,11 @@ individual errors do not stop later calls.
 			defer cleanup()
 
 			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
-				ContractID: args[0],
-				Function:   args[1],
-				Args:       args[2:],
+				ContractID:         args[0],
+				Function:           args[1],
+				Args:               args[2:],
+				Baseline:           baseline,
+				MaxIncreasePercent: threshold,
 			})
 			if err != nil {
 				return err
@@ -100,15 +134,79 @@ individual errors do not stop later calls.
 			}
 
 			if opts.jsonOut {
-				return writeJSON(cmd.OutOrStdout(), result)
+				err = writeJSON(cmd.OutOrStdout(), result)
+			} else {
+				err = renderSimulate(cmd.OutOrStdout(), result)
 			}
-			return renderSimulate(cmd.OutOrStdout(), result)
+			if err != nil {
+				return err
+			}
+
+			// The report is written before the verdict, so a run that trips
+			// the threshold still leaves its numbers behind.
+			if result.Comparison != nil && result.Comparison.Exceeded {
+				return &checkFailedError{msg: fmt.Sprintf(
+					"the cost grew by more than %s", formatPercent(*result.Comparison.MaxIncreasePercent))}
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
+	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
+	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	return cmd
+}
+
+// readBaseline reads a saved simulation report to compare a cost against.
+//
+// The file is a previous --json output, so it holds more fields than the
+// baseline needs; the rest are ignored rather than rejected, because the
+// report is a document SoroProbe wrote and not a form the user fills in.
+func readBaseline(path string) (*probe.Baseline, error) {
+	if path == "" {
+		return nil, nil
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read baseline %s: %w", path, err)
+	}
+
+	var baseline probe.Baseline
+	if err := json.Unmarshal(raw, &baseline); err != nil {
+		return nil, fmt.Errorf("parse baseline %s: %w", path, err)
+	}
+	return &baseline, nil
+}
+
+// parseMaxIncrease parses the --max-increase threshold.
+//
+// The percentage sign is optional, so "10" and "10%" mean the same thing, and
+// the threshold is only meaningful alongside a baseline.
+func parseMaxIncrease(s string, hasBaseline bool) (*float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	if !hasBaseline {
+		return nil, fmt.Errorf("--max-increase needs --baseline, which is what it compares against")
+	}
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return nil, fmt.Errorf("expected a percentage, got %q", s)
+	}
+	if value < 0 {
+		return nil, fmt.Errorf("a percentage cannot be negative, got %q", s)
+	}
+	return &value, nil
+}
+
+// formatPercent renders a percentage threshold.
+func formatPercent(v float64) string {
+	return fmt.Sprintf("%g%%", v)
 }
 
 func newInspectCmd(opts *options) *cobra.Command {
@@ -116,6 +214,7 @@ func newInspectCmd(opts *options) *cobra.Command {
 	var keyFile string
 	var durability string
 	var reportPath string
+	var estimateExtend uint32
 
 	cmd := &cobra.Command{
 		Use:   "inspect <contract-id>",
@@ -132,6 +231,11 @@ depend on.
 too many entries for a command line. Keys from the file and from --key are
 combined; an invalid line is reported with its line number before any request
 is sent.
+
+--estimate-extend prices keeping the contract's entries alive: it simulates
+an extension of each reported entry and reports what it would cost. Nothing
+is submitted, and an entry that cannot be extended — because it is missing or
+has already expired — says so instead of quoting a price.
 
 ` + argHelp,
 		Args: cobra.ExactArgs(1),
@@ -162,6 +266,7 @@ is sent.
 				ContractID:     args[0],
 				DataKeys:       keys,
 				DataDurability: d,
+				EstimateExtend: estimateExtend,
 			})
 			if err != nil {
 				return err
@@ -182,6 +287,8 @@ is sent.
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys to inspect, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
+	cmd.Flags().Uint32Var(&estimateExtend, "estimate-extend", 0,
+		"also price extending each reported entry's TTL by this many ledgers")
 	return cmd
 }
 
@@ -195,6 +302,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var checkTimeout time.Duration
 	var concurrency int
 	var reportPath string
+	var quiet bool
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -234,9 +342,14 @@ check could not run, else 1 if any failed, else 0.
 the terminal, so a CI run can keep readable logs and a machine-readable
 artifact. The file is written even when the check fails.
 
+--quiet prints no report at all: success and check failure are told apart by
+the exit code alone. Errors that make SoroProbe itself fail (exit 2) still
+reach stderr, which is the point — redirecting stdout is what used to hide
+them. --quiet cannot be combined with --json or --report.
+
 Inside GitHub Actions (GITHUB_ACTIONS is set) each failed or warned step also
 prints an ::error:: or ::warning:: line, which surfaces on the run summary
-instead of hiding in the log. --json suppresses them.`,
+instead of hiding in the log. --json and --quiet suppress them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
@@ -250,6 +363,10 @@ instead of hiding in the log. --json suppresses them.`,
 			return cobra.ExactArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkQuietConflicts(quiet, opts.jsonOut, reportPath); err != nil {
+				return err
+			}
+
 			report, err := openReport(reportPath)
 			if err != nil {
 				return err
@@ -257,7 +374,7 @@ instead of hiding in the log. --json suppresses them.`,
 			defer report.close()
 
 			if file != "" {
-				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report)
+				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet)
 			}
 
 			d, err := parseDurability(durability)
@@ -293,21 +410,7 @@ instead of hiding in the log. --json suppresses them.`,
 				return err
 			}
 
-			out := cmd.OutOrStdout()
-			if opts.jsonOut {
-				err = writeJSON(out, result)
-			} else {
-				err = renderCheck(out, result)
-			}
-			if err != nil {
-				return err
-			}
-
-			// Annotations go to stdout, the stream a step's log reads. They
-			// stay off under --json, whose consumer parses the document.
-			if !opts.jsonOut {
-				emitCheckAnnotations(out, result, inGitHubActions())
-			}
+			emitSingleCheckOutput(cmd, opts, result, quiet)
 
 			if !result.OK {
 				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
@@ -325,12 +428,14 @@ instead of hiding in the log. --json suppresses them.`,
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file checks to run at once")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false,
+		"print no report; the exit code is the whole answer (errors still reach stderr)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	return cmd
 }
 
 // runCheckFile runs a batch of checks read from path.
-func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, concurrency int, report *reportFile) error {
+func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, concurrency int, report *reportFile, quiet bool) error {
 	req, err := readBatch(cmd.InOrStdin(), path)
 	if err != nil {
 		return err
@@ -356,19 +461,21 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 	}
 
 	out := cmd.OutOrStdout()
-	if opts.jsonOut {
-		err = writeJSON(out, result)
-	} else {
-		err = renderBatch(out, result)
-	}
-	if err != nil {
-		return err
-	}
+	if !quiet {
+		if opts.jsonOut {
+			err = writeJSON(out, result)
+		} else {
+			err = renderBatch(out, result)
+		}
+		if err != nil {
+			return err
+		}
 
-	// Annotations go to stdout, the stream a step's log reads. They stay off
-	// under --json, whose consumer parses the document.
-	if !opts.jsonOut {
-		emitBatchAnnotations(out, result, inGitHubActions())
+		// Annotations go to stdout, the stream a step's log reads. They stay
+		// off under --json, whose consumer parses the document.
+		if !opts.jsonOut {
+			emitBatchAnnotations(out, result, inGitHubActions())
+		}
 	}
 
 	switch {
@@ -378,6 +485,41 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 		return fmt.Errorf("one or more checks could not be run")
 	case !result.OK:
 		return &checkFailedError{msg: "one or more checks failed"}
+	}
+	return nil
+}
+
+// emitSingleCheckOutput writes the text or JSON report for a single contract,
+// unless --quiet asked for none. Annotations are only emitted when a text
+// report was printed: --json consumers parse the document, and --quiet asked
+// for silence.
+func emitSingleCheckOutput(cmd *cobra.Command, opts *options, result *probe.CheckResult, quiet bool) error {
+	if quiet {
+		return nil
+	}
+	out := cmd.OutOrStdout()
+	if opts.jsonOut {
+		return writeJSON(out, result)
+	}
+	if err := renderCheck(out, result); err != nil {
+		return err
+	}
+	emitCheckAnnotations(out, result, inGitHubActions())
+	return nil
+}
+
+// checkQuietConflicts rejects flag combinations that contradict each other,
+// rather than silently letting one win. Exit-2 errors are printed by main, so
+// --quiet cannot swallow them.
+func checkQuietConflicts(quiet, jsonOut bool, reportPath string) error {
+	if !quiet {
+		return nil
+	}
+	switch {
+	case jsonOut:
+		return fmt.Errorf("--quiet prints no report, so it cannot be combined with --json")
+	case reportPath != "":
+		return fmt.Errorf("--report writes a JSON file while printing text as usual, so it cannot be combined with --quiet")
 	}
 	return nil
 }
@@ -510,10 +652,11 @@ services. The API is read-only, exactly like the CLI.`,
 
 			log := opts.cfg.Logger(os.Stderr)
 			server := api.New(api.Options{
-				Prober:      p,
-				Addr:        opts.cfg.HTTPAddr,
-				Logger:      log,
-				CORSOrigins: opts.cfg.CORSOrigins,
+				Prober:            p,
+				Addr:              opts.cfg.HTTPAddr,
+				Logger:            log,
+				CORSOrigins:       opts.cfg.CORSOrigins,
+				NetworkPassphrase: opts.cfg.NetworkPassphrase,
 			})
 			return server.ListenAndServe(cmd.Context())
 		},
