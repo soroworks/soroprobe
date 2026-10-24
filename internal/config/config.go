@@ -30,9 +30,11 @@ const (
 	// quota on whoever finds it, so serving wider than the local machine is an
 	// opt-in rather than the default. The Docker image widens it, because
 	// loopback inside a container would reach nothing.
-	DefaultHTTPAddr = "127.0.0.1:8080"
-	DefaultLogLevel = "info"
-	DefaultTimeout  = 30 * time.Second
+	DefaultHTTPAddr                  = "127.0.0.1:8080"
+	DefaultRateLimitPerMinute uint32 = 60
+	DefaultRateLimitBurst     uint32 = 10
+	DefaultLogLevel                  = "info"
+	DefaultTimeout                   = 30 * time.Second
 
 	// DefaultSourceAccount is the all-zero ed25519 account ID. Simulation reads
 	// the source account but never needs it to exist, be funded, or sign
@@ -50,18 +52,23 @@ const (
 
 // Environment variable names.
 const (
-	EnvRPCURL            = "RPC_URL"
-	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
-	EnvSourceAccount     = "SOURCE_ACCOUNT"
-	EnvHTTPAddr          = "HTTP_ADDR"
-	EnvCORSOrigins       = "CORS_ORIGINS"
-	EnvLogLevel          = "LOG_LEVEL"
-	EnvTimeout           = "RPC_TIMEOUT"
-	EnvWarnLedgers       = "WARN_LEDGERS"
-	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
-	EnvConfigFile        = "SOROPROBE_CONFIG"
-	EnvSoroVaultURL      = "SOROVAULT_URL"
-	EnvBaseFee           = "BASE_FEE"
+	EnvRPCURL                 = "RPC_URL"
+	EnvNetworkPassphrase      = "NETWORK_PASSPHRASE"
+	EnvSourceAccount          = "SOURCE_ACCOUNT"
+	EnvHTTPAddr               = "HTTP_ADDR"
+	EnvCORSOrigins            = "CORS_ORIGINS"
+	EnvLogLevel               = "LOG_LEVEL"
+	EnvTimeout                = "RPC_TIMEOUT"
+	EnvWarnLedgers            = "WARN_LEDGERS"
+	EnvCriticalLedgers        = "CRITICAL_LEDGERS"
+	EnvConfigFile             = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL           = "SOROVAULT_URL"
+	EnvBaseFee                = "BASE_FEE"
+	EnvHTTPRateLimitPerMinute = "HTTP_RATE_LIMIT_PER_MINUTE"
+	EnvHTTPRateLimitBurst     = "HTTP_RATE_LIMIT_BURST"
+	EnvHTTPTrustForwardedFor  = "HTTP_TRUST_FORWARDED_FOR"
+	EnvHTTPTLSCert            = "HTTP_TLS_CERT"
+	EnvHTTPTLSKey             = "HTTP_TLS_KEY"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -76,7 +83,12 @@ type Config struct {
 	// HTTPAddr is the listen address for the HTTP API.
 	HTTPAddr string `json:"http_addr"`
 	// CORSOrigins is the exact-origin allow-list for the HTTP API.
-	CORSOrigins []string `json:"-"`
+	CORSOrigins            []string `json:"-"`
+	HTTPRateLimitPerMinute uint32   `json:"http_rate_limit_per_minute"`
+	HTTPRateLimitBurst     uint32   `json:"http_rate_limit_burst"`
+	HTTPTrustForwardedFor  bool     `json:"http_trust_forwarded_for"`
+	HTTPTLSCert            string   `json:"http_tls_cert"`
+	HTTPTLSKey             string   `json:"http_tls_key"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `json:"log_level"`
 	// Timeout bounds a single RPC request.
@@ -97,31 +109,38 @@ type Config struct {
 // Default returns a Config populated entirely from the package defaults.
 func Default() Config {
 	return Config{
-		RPCURL:            DefaultRPCURL,
-		NetworkPassphrase: DefaultNetworkPassphrase,
-		SourceAccount:     DefaultSourceAccount,
-		HTTPAddr:          DefaultHTTPAddr,
-		LogLevel:          DefaultLogLevel,
-		Timeout:           DefaultTimeout,
-		WarnLedgers:       DefaultWarnLedgers,
-		CriticalLedgers:   DefaultCriticalLedgers,
-		BaseFee:           DefaultBaseFee,
+		RPCURL:                 DefaultRPCURL,
+		NetworkPassphrase:      DefaultNetworkPassphrase,
+		SourceAccount:          DefaultSourceAccount,
+		HTTPAddr:               DefaultHTTPAddr,
+		LogLevel:               DefaultLogLevel,
+		Timeout:                DefaultTimeout,
+		WarnLedgers:            DefaultWarnLedgers,
+		CriticalLedgers:        DefaultCriticalLedgers,
+		BaseFee:                DefaultBaseFee,
+		HTTPRateLimitPerMinute: DefaultRateLimitPerMinute,
+		HTTPRateLimitBurst:     DefaultRateLimitBurst,
 	}
 }
 
 // fileConfig mirrors Config but with pointers, so that "absent" is
 // distinguishable from "set to the zero value".
 type fileConfig struct {
-	RPCURL            *string `json:"rpc_url"`
-	NetworkPassphrase *string `json:"network_passphrase"`
-	SourceAccount     *string `json:"source_account"`
-	HTTPAddr          *string `json:"http_addr"`
-	LogLevel          *string `json:"log_level"`
-	Timeout           *string `json:"timeout"`
-	WarnLedgers       *uint32 `json:"warn_ledgers"`
-	CriticalLedgers   *uint32 `json:"critical_ledgers"`
-	SoroVaultURL      *string `json:"sorovault_url"`
-	BaseFee           *int64  `json:"base_fee"`
+	RPCURL                 *string `json:"rpc_url"`
+	NetworkPassphrase      *string `json:"network_passphrase"`
+	SourceAccount          *string `json:"source_account"`
+	HTTPAddr               *string `json:"http_addr"`
+	LogLevel               *string `json:"log_level"`
+	Timeout                *string `json:"timeout"`
+	WarnLedgers            *uint32 `json:"warn_ledgers"`
+	CriticalLedgers        *uint32 `json:"critical_ledgers"`
+	SoroVaultURL           *string `json:"sorovault_url"`
+	BaseFee                *int64  `json:"base_fee"`
+	HTTPRateLimitPerMinute *uint32 `json:"http_rate_limit_per_minute"`
+	HTTPRateLimitBurst     *uint32 `json:"http_rate_limit_burst"`
+	HTTPTrustForwardedFor  *bool   `json:"http_trust_forwarded_for"`
+	HTTPTLSCert            *string `json:"http_tls_cert"`
+	HTTPTLSKey             *string `json:"http_tls_key"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -169,6 +188,17 @@ func applyFile(cfg *Config, path string, required bool) error {
 	setString(&cfg.NetworkPassphrase, fc.NetworkPassphrase)
 	setString(&cfg.SourceAccount, fc.SourceAccount)
 	setString(&cfg.HTTPAddr, fc.HTTPAddr)
+	if fc.HTTPRateLimitPerMinute != nil {
+		cfg.HTTPRateLimitPerMinute = *fc.HTTPRateLimitPerMinute
+	}
+	if fc.HTTPRateLimitBurst != nil {
+		cfg.HTTPRateLimitBurst = *fc.HTTPRateLimitBurst
+	}
+	if fc.HTTPTrustForwardedFor != nil {
+		cfg.HTTPTrustForwardedFor = *fc.HTTPTrustForwardedFor
+	}
+	setString(&cfg.HTTPTLSCert, fc.HTTPTLSCert)
+	setString(&cfg.HTTPTLSKey, fc.HTTPTLSKey)
 	setString(&cfg.LogLevel, fc.LogLevel)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
 	if fc.WarnLedgers != nil {
@@ -195,6 +225,21 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NetworkPassphrase, lookup(EnvNetworkPassphrase))
 	setString(&cfg.SourceAccount, lookup(EnvSourceAccount))
 	setString(&cfg.HTTPAddr, lookup(EnvHTTPAddr))
+	if err := setUint32FromEnv(&cfg.HTTPRateLimitPerMinute, EnvHTTPRateLimitPerMinute); err != nil {
+		return err
+	}
+	if err := setUint32FromEnv(&cfg.HTTPRateLimitBurst, EnvHTTPRateLimitBurst); err != nil {
+		return err
+	}
+	if v := lookup(EnvHTTPTrustForwardedFor); v != nil {
+		trusted, err := strconv.ParseBool(*v)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", EnvHTTPTrustForwardedFor, err)
+		}
+		cfg.HTTPTrustForwardedFor = trusted
+	}
+	setString(&cfg.HTTPTLSCert, lookup(EnvHTTPTLSCert))
+	setString(&cfg.HTTPTLSKey, lookup(EnvHTTPTLSKey))
 	if origins := lookup(EnvCORSOrigins); origins != nil {
 		cfg.CORSOrigins = nil
 		for _, origin := range strings.Split(*origins, ",") {
@@ -264,6 +309,12 @@ func setString(dst *string, src *string) {
 
 // Validate reports whether the configuration is usable.
 func (c Config) Validate() error {
+	if (c.HTTPTLSCert == "") != (c.HTTPTLSKey == "") {
+		return errors.New("HTTP TLS certificate and key must be configured together")
+	}
+	if c.HTTPRateLimitPerMinute == 0 || c.HTTPRateLimitBurst == 0 {
+		return errors.New("HTTP rate limit and burst must be positive")
+	}
 	if c.RPCURL == "" {
 		return errors.New("rpc url is required")
 	}
