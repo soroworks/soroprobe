@@ -7,10 +7,12 @@ package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +28,20 @@ type Server struct {
 	addr   string
 	log    *slog.Logger
 	router chi.Router
+
+	// networkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve.
+	networkPassphrase string
+	// readinessTTL bounds how long a /readyz result is reused before the
+	// RPC endpoint is probed again.
+	readinessTTL time.Duration
+	// ready* cache the last readiness result, so a chatty orchestrator does
+	// not multiply RPC traffic. A mutex guards the pair; it is never held
+	// across an RPC call.
+	readyMu  sync.Mutex
+	readyAt  time.Time
+	readyErr error
+	readySet bool
 }
 
 // Options configures a Server.
@@ -47,6 +63,13 @@ type Options struct {
 	APIToken string
 	// Timeout bounds a single request. Defaults to 60s.
 	Timeout time.Duration
+	// NetworkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve; a healthy endpoint on another network is reported unready.
+	// Defaults to the testnet passphrase, matching the CLI's defaults.
+	NetworkPassphrase string
+	// ReadinessCacheTTL bounds how long a /readyz result is reused before
+	// the RPC endpoint is probed again. Defaults to 5s.
+	ReadinessCacheTTL time.Duration
 }
 
 // New builds a Server with its routes mounted.
@@ -60,8 +83,20 @@ func New(opts Options) *Server {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 60 * time.Second
 	}
+	if opts.NetworkPassphrase == "" {
+		opts.NetworkPassphrase = config.DefaultNetworkPassphrase
+	}
+	if opts.ReadinessCacheTTL <= 0 {
+		opts.ReadinessCacheTTL = 5 * time.Second
+	}
 
-	s := &Server{prober: opts.Prober, addr: opts.Addr, log: opts.Logger}
+	s := &Server{
+		prober:            opts.Prober,
+		addr:              opts.Addr,
+		log:               opts.Logger,
+		networkPassphrase: opts.NetworkPassphrase,
+		readinessTTL:      opts.ReadinessCacheTTL,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -76,6 +111,8 @@ func New(opts Options) *Server {
 	// /healthz stays outside the authenticated /v1 subtree on purpose: a
 	// liveness probe should not need a credential to prove the process is up.
 	r.Get("/healthz", s.handleLiveness)
+	r.Get("/openapi.json", s.handleOpenAPI)
+	r.Get("/readyz", s.handleReadiness)
 	r.Route("/v1", func(r chi.Router) {
 		if opts.APIToken != "" {
 			r.Use(requireToken(opts.APIToken))
@@ -125,7 +162,7 @@ func cors(origins []string) func(http.Handler) http.Handler {
 // without binding a port.
 func (s *Server) Handler() http.Handler { return s.router }
 
-// ListenAndServe runs the server until ctx is cancelled, then shuts it down
+// ListenAndServe runs the server until ctx is canceled, then shuts it down
 // gracefully.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
@@ -153,6 +190,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.log.Info("shutting down http api")
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+//go:embed openapi.json
+var openAPISpec []byte
+
+func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(openAPISpec)
 }
 
 // nosniff stops a browser from reinterpreting a response as a type it did not

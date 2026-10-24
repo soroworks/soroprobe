@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,8 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var file string
 	var baselinePath string
 	var maxIncrease string
+	var repeat int
+	var maxSpread string
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -77,6 +80,13 @@ a different call is rejected rather than compared.
 tolerated, as a percentage ("10%"). When a figure grows by more than that,
 the command exits 1.
 
+--repeat runs the same simulation N times and reports the spread between the
+runs, so a noisy estimate is told apart from a stable one. --max-spread sets
+the largest spread, as a percentage of the minimum, that is tolerated before
+the run is flagged as noisy and the command exits 1. When --baseline is also
+given, the comparison uses the maximum of the repeated runs, so a flaky
+estimate cannot make a cost check pass by luck.
+
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
@@ -89,16 +99,22 @@ the command exits 1.
 				if maxIncrease != "" {
 					return fmt.Errorf("--max-increase compares one call, so it cannot be used with --file")
 				}
+				if repeat > 1 {
+					return fmt.Errorf("--repeat simulates one call, so it cannot be used with --file")
+				}
+				if maxSpread != "" {
+					return fmt.Errorf("--max-spread judges repeated runs, so it cannot be used with --file")
+				}
 				return nil
 			}
 			return cobra.MinimumNArgs(2)(cmd, args)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			report, err := openReport(reportPath)
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			if file != "" {
 				return runSimulateFile(cmd, opts, file, report)
@@ -109,6 +125,10 @@ the command exits 1.
 				return err
 			}
 			threshold, err := parseMaxIncrease(maxIncrease, baseline != nil)
+			if err != nil {
+				return err
+			}
+			spread, err := parseMaxSpread(maxSpread, repeat)
 			if err != nil {
 				return err
 			}
@@ -125,6 +145,8 @@ the command exits 1.
 				Args:               args[2:],
 				Baseline:           baseline,
 				MaxIncreasePercent: threshold,
+				Repeat:             repeat,
+				MaxSpreadPercent:   spread,
 			})
 			if err != nil {
 				return err
@@ -149,6 +171,13 @@ the command exits 1.
 				return &checkFailedError{msg: fmt.Sprintf(
 					"the cost grew by more than %s", formatPercent(*result.Comparison.MaxIncreasePercent))}
 			}
+			// A noisy estimate is a failed measurement, not a failed call:
+			// its own exit keeps it apart from a check failure.
+			if result.Spread != nil && result.Spread.Noisy {
+				return &checkFailedError{msg: fmt.Sprintf(
+					"the cost varied by more than %s across %d runs",
+					formatPercent(*result.Spread.MaxSpreadPercent), result.Spread.Runs)}
+			}
 			return nil
 		},
 	}
@@ -157,6 +186,8 @@ the command exits 1.
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
+	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
+	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
 	return cmd
 }
 
@@ -170,7 +201,7 @@ func readBaseline(path string) (*probe.Baseline, error) {
 		return nil, nil
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // --baseline is an operator-supplied path; reading it is the feature.
 	if err != nil {
 		return nil, fmt.Errorf("read baseline %s: %w", path, err)
 	}
@@ -210,6 +241,31 @@ func formatPercent(v float64) string {
 	return fmt.Sprintf("%g%%", v)
 }
 
+// parseMaxSpread parses the --max-spread threshold.
+//
+// Like --max-increase the percentage sign is optional, but unlike it a spread
+// threshold needs repeated runs: with one run there is no spread to judge.
+// An empty string means "do not judge", leaving the spread reported but not
+// flagged, which is what a bare --repeat asks for.
+func parseMaxSpread(s string, repeat int) (*float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	if repeat < 2 {
+		return nil, fmt.Errorf("--max-spread needs --repeat of at least 2, which is what it judges")
+	}
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return nil, fmt.Errorf("expected a percentage, got %q", s)
+	}
+	if value < 0 {
+		return nil, fmt.Errorf("a percentage cannot be negative, got %q", s)
+	}
+	return &value, nil
+}
+
 func newInspectCmd(opts *options) *cobra.Command {
 	var dataKeys []string
 	var keyFile string
@@ -240,7 +296,7 @@ has already expired — says so instead of quoting a price.
 
 ` + argHelp,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			d, err := parseDurability(durability)
 			if err != nil {
 				return err
@@ -250,7 +306,7 @@ has already expired — says so instead of quoting a price.
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			keys, err := mergeKeys(keyFile, dataKeys)
 			if err != nil {
@@ -296,6 +352,7 @@ has already expired — says so instead of quoting a price.
 func newCheckCmd(opts *options) *cobra.Command {
 	var function string
 	var callArgs []string
+	var expect string
 	var dataKeys []string
 	var keyFile string
 	var durability string
@@ -363,7 +420,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			}
 			return cobra.ExactArgs(1)(cmd, args)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			if err := checkQuietConflicts(quiet, opts.jsonOut, reportPath); err != nil {
 				return err
 			}
@@ -372,7 +429,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			if file != "" {
 				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet)
@@ -398,6 +455,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				ContractID:     args[0],
 				Function:       function,
 				Args:           callArgs,
+				Expect:         expect,
 				DataKeys:       keys,
 				DataDurability: d,
 			})
@@ -411,7 +469,9 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				return err
 			}
 
-			emitSingleCheckOutput(cmd, opts, result, quiet)
+			if err := emitSingleCheckOutput(cmd, opts, result, quiet); err != nil {
+				return err
+			}
 
 			if !result.OK {
 				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
@@ -422,6 +482,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 
 	cmd.Flags().StringVar(&function, "fn", "", "read-only function to simulate as a liveness probe")
 	cmd.Flags().StringArrayVar(&callArgs, "arg", nil, "argument for --fn, in type:value form (repeatable)")
+	cmd.Flags().StringVar(&expect, "expect", "", "expected return value specification for --fn, in type:value form")
 	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys for the TTL check, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
@@ -542,13 +603,13 @@ func applyDefaultTimeout(req *probe.BatchRequest, d time.Duration) {
 // readBatch parses a check file. Unknown fields are rejected, so a typo such
 // as "fn" for "function" fails loudly instead of silently skipping a probe.
 func readBatch(stdin io.Reader, path string) (probe.BatchRequest, error) {
-	var r io.Reader = stdin
+	r := stdin
 	if path != "-" {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // --file is an operator-supplied path; reading it is the feature.
 		if err != nil {
 			return probe.BatchRequest{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 
@@ -604,13 +665,13 @@ func runSimulateFile(cmd *cobra.Command, opts *options, path string, report *rep
 }
 
 func readSimulateBatch(stdin io.Reader, path string) (probe.SimulateBatchRequest, error) {
-	var r io.Reader = stdin
+	r := stdin
 	if path != "-" {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // --file is an operator-supplied path; reading it is the feature.
 		if err != nil {
 			return probe.SimulateBatchRequest{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 
@@ -659,11 +720,12 @@ token shorter than 16 characters is rejected at startup.`,
 
 			log := opts.cfg.Logger(os.Stderr)
 			server := api.New(api.Options{
-				Prober:      p,
-				Addr:        opts.cfg.HTTPAddr,
-				Logger:      log,
-				CORSOrigins: opts.cfg.CORSOrigins,
-				APIToken:    opts.cfg.APIToken,
+				Prober:            p,
+				Addr:              opts.cfg.HTTPAddr,
+				Logger:            log,
+				CORSOrigins:       opts.cfg.CORSOrigins,
+				NetworkPassphrase: opts.cfg.NetworkPassphrase,
+				APIToken:          opts.cfg.APIToken,
 			})
 			return server.ListenAndServe(cmd.Context())
 		},

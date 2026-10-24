@@ -54,6 +54,8 @@ const (
 	DefaultWarnLedgers = 120_960
 	// DefaultCriticalLedgers is ~1 day at 5s per ledger.
 	DefaultCriticalLedgers = 17_280
+	// DefaultBaseFee is the network minimum base fee in stroops.
+	DefaultBaseFee = int64(100)
 )
 
 // Environment variable names.
@@ -70,6 +72,7 @@ const (
 	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
 	EnvConfigFile        = "SOROPROBE_CONFIG"
 	EnvSoroVaultURL      = "SOROVAULT_URL"
+	EnvBaseFee           = "BASE_FEE"
 	EnvAPIToken          = "API_TOKEN"
 )
 
@@ -108,6 +111,9 @@ type Config struct {
 	// is deliberately absent from the config file and the environment is the
 	// place to set it (or the --api-token flag).
 	APIToken string `json:"-"`
+
+	// BaseFee is the base inclusion fee per operation in stroops.
+	BaseFee int64 `json:"base_fee"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -122,6 +128,7 @@ func Default() Config {
 		Timeout:           DefaultTimeout,
 		WarnLedgers:       DefaultWarnLedgers,
 		CriticalLedgers:   DefaultCriticalLedgers,
+		BaseFee:           DefaultBaseFee,
 	}
 }
 
@@ -138,6 +145,7 @@ type fileConfig struct {
 	WarnLedgers       *uint32 `json:"warn_ledgers"`
 	CriticalLedgers   *uint32 `json:"critical_ledgers"`
 	SoroVaultURL      *string `json:"sorovault_url"`
+	BaseFee           *int64  `json:"base_fee"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -168,7 +176,7 @@ func Load(path string) (Config, error) {
 }
 
 func applyFile(cfg *Config, path string, required bool) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !required {
 			return nil
@@ -193,6 +201,9 @@ func applyFile(cfg *Config, path string, required bool) error {
 	}
 	if fc.CriticalLedgers != nil {
 		cfg.CriticalLedgers = *fc.CriticalLedgers
+	}
+	if fc.BaseFee != nil {
+		cfg.BaseFee = *fc.BaseFee
 	}
 	if fc.Timeout != nil {
 		d, err := time.ParseDuration(*fc.Timeout)
@@ -232,7 +243,23 @@ func applyEnv(cfg *Config) error {
 	if err := setUint32FromEnv(&cfg.WarnLedgers, EnvWarnLedgers); err != nil {
 		return err
 	}
-	return setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers)
+	if err := setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers); err != nil {
+		return err
+	}
+	return setInt64FromEnv(&cfg.BaseFee, EnvBaseFee)
+}
+
+func setInt64FromEnv(dst *int64, key string) error {
+	v := lookup(key)
+	if v == nil {
+		return nil
+	}
+	n, err := strconv.ParseInt(*v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", key, err)
+	}
+	*dst = n
+	return nil
 }
 
 func setUint32FromEnv(dst *uint32, key string) error {

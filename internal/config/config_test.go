@@ -104,7 +104,7 @@ func TestLoadFromFile(t *testing.T) {
 
 func TestLogFileCannotSetTheAPIToken(t *testing.T) {
 	// The token is a secret, so the config file cannot carry one: an
-	// "api_token" key is ignored rather than honoured, and the operator is
+	// "api_token" key is ignored rather than honored, and the operator is
 	// pointed at the environment instead.
 	path := writeConfig(t, `{"api_token": "file-issued-token-abcdef"}`)
 
