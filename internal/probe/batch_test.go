@@ -38,6 +38,51 @@ func TestCheckBatchAllPass(t *testing.T) {
 	assert.True(t, result.Items[0].Result.OK)
 }
 
+func TestCheckBatchMatchesIndividualChecksWithFewerLedgerRequests(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	p := newProber(t, fake, health.DefaultThresholds)
+	checks := []probe.NamedCheck{
+		named("native", stellartest.SACContract, "decimals"),
+		named("wasm", stellartest.WasmContract, "decimals"),
+	}
+	batched, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks})
+	require.NoError(t, err)
+	require.Len(t, batched.Items, len(checks))
+	assert.Len(t, fake.EntryRequests, 2, "the batch uses one instance/data round and one code round")
+
+	for i, check := range checks {
+		individual, err := p.Check(context.Background(), check.CheckRequest)
+		require.NoError(t, err)
+		assert.Equal(t, individual, batched.Items[i].Result)
+	}
+	assert.Len(t, fake.EntryRequests, 5, "the two separate checks add three RPC calls")
+}
+
+func TestCheckBatchChunksLedgerKeysAtRPCLimit(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	p := newProber(t, fake, health.DefaultThresholds)
+	checks := make([]probe.NamedCheck, probe.MaxBatchChecks)
+	for i := range checks {
+		check := named(string(rune('a'+i)), stellartest.SACContract, "")
+		check.Name = fmt.Sprintf("check-%d", i)
+		for key := 0; key < 10; key++ {
+			check.DataKeys = append(check.DataKeys, fmt.Sprintf("sym:key_%d_%d", i, key))
+		}
+		checks[i] = check
+	}
+
+	_, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks})
+	require.NoError(t, err)
+	require.Len(t, fake.EntryRequests, 6, "1001 distinct instance/data keys need six calls at 200 keys per call")
+	for _, request := range fake.EntryRequests {
+		assert.LessOrEqual(t, len(request), 200)
+	}
+}
+
 func TestCheckBatchConcurrentKeepsInputOrder(t *testing.T) {
 	t.Parallel()
 	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)
@@ -136,11 +181,11 @@ func TestCheckBatchStopsOnCancel(t *testing.T) {
 	cancel()
 	_, err := p.CheckBatch(ctx, probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}})
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, fake.EntryRequests, "a cancelled batch sends nothing")
+	assert.Empty(t, fake.EntryRequests, "a canceled batch sends nothing")
 }
 
 // hungClient makes the first GetLedgerEntries call block until its context is
-// done, modelling an upstream that never answers. Later calls reach the
+// done, modeling an upstream that never answers. Later calls reach the
 // fixtures, so the batch can be shown to keep going after a check times out.
 type hungClient struct {
 	*stellartest.Fake

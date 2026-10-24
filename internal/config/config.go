@@ -49,17 +49,23 @@ const (
 
 // Environment variable names.
 const (
-	EnvRPCURL            = "RPC_URL"
-	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
-	EnvSourceAccount     = "SOURCE_ACCOUNT"
-	EnvHTTPAddr          = "HTTP_ADDR"
-	EnvCORSOrigins       = "CORS_ORIGINS"
-	EnvLogLevel          = "LOG_LEVEL"
-	EnvTimeout           = "RPC_TIMEOUT"
-	EnvWarnLedgers       = "WARN_LEDGERS"
-	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
-	EnvConfigFile        = "SOROPROBE_CONFIG"
-	EnvSoroVaultURL      = "SOROVAULT_URL"
+	EnvRPCURL                  = "RPC_URL"
+	EnvNetworkPassphrase       = "NETWORK_PASSPHRASE"
+	EnvSourceAccount           = "SOURCE_ACCOUNT"
+	EnvHTTPAddr                = "HTTP_ADDR"
+	EnvCORSOrigins             = "CORS_ORIGINS"
+	EnvLogLevel                = "LOG_LEVEL"
+	EnvTimeout                 = "RPC_TIMEOUT"
+	EnvWarnLedgers             = "WARN_LEDGERS"
+	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
+	EnvConfigFile              = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvInstanceWarnLedgers     = "INSTANCE_WARN_LEDGERS"
+	EnvInstanceCriticalLedgers = "INSTANCE_CRITICAL_LEDGERS"
+	EnvCodeWarnLedgers         = "CODE_WARN_LEDGERS"
+	EnvCodeCriticalLedgers     = "CODE_CRITICAL_LEDGERS"
+	EnvDataWarnLedgers         = "DATA_WARN_LEDGERS"
+	EnvDataCriticalLedgers     = "DATA_CRITICAL_LEDGERS"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -149,7 +155,7 @@ func Load(path string) (Config, error) {
 }
 
 func applyFile(cfg *Config, path string, required bool) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !required {
 			return nil

@@ -140,13 +140,13 @@ func customSection(wasm []byte, wanted string) ([]byte, error) {
 		sectionID := wasm[position]
 		position++
 		sectionSize, err := readULEB(wasm, &position)
-		if err != nil || uint64(position)+uint64(sectionSize) > uint64(len(wasm)) {
+		if err != nil || int64(sectionSize) > int64(len(wasm)-position) {
 			return nil, errors.New("invalid Wasm section length")
 		}
 		sectionEnd := position + int(sectionSize)
 		if sectionID == 0 {
 			nameLength, err := readULEB(wasm[:sectionEnd], &position)
-			if err != nil || uint64(position)+uint64(nameLength) > uint64(sectionEnd) {
+			if err != nil || int64(nameLength) > int64(sectionEnd-position) {
 				return nil, errors.New("invalid Wasm custom-section name")
 			}
 			nameEnd := position + int(nameLength)
@@ -158,7 +158,7 @@ func customSection(wasm []byte, wanted string) ([]byte, error) {
 		}
 		position = sectionEnd
 	}
-	return nil, fmt.Errorf("Wasm module has no %q custom section", wanted)
+	return nil, fmt.Errorf("wasm module has no %q custom section", wanted)
 }
 
 func readULEB(data []byte, position *int) (uint32, error) {

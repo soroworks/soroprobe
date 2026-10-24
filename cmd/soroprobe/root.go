@@ -34,7 +34,8 @@ type options struct {
 	jsonOut    bool
 	// newProber builds the Prober commands run against. A nil factory means
 	// the live one, so a zero-value options still behaves like production.
-	newProber proberFactory
+	newProber    proberFactory
+	abiFromChain bool
 }
 
 func newRootCmd() (*cobra.Command, *options) {
@@ -176,11 +177,12 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 	if o.newProber != nil {
 		return o.newProber(o.cfg)
 	}
-	return newLiveProber(o.cfg)
+	return newLiveProber(o.cfg, o.abiFromChain)
 }
 
-// newLiveProber builds a Prober over a live Stellar RPC client.
-func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
+// newLiveProber builds a Prober over a live Stellar RPC client. abiFromChain
+// types arguments from the interface stored on chain instead of SoroVault.
+func newLiveProber(cfg config.Config, abiFromChain bool) (*probe.Prober, func(), error) {
 	log := cfg.Logger(os.Stderr)
 
 	client, err := stellar.New(stellar.Options{
@@ -193,7 +195,9 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 	}
 
 	var source abi.Source
-	if cfg.SoroVaultURL != "" {
+	if abiFromChain {
+		source = abi.NewChainSource(client)
+	} else if cfg.SoroVaultURL != "" {
 		vault, err := abi.NewSoroVault(cfg.SoroVaultURL, nil, cfg.Timeout)
 		if err != nil {
 			_ = client.Close()
@@ -209,9 +213,10 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 			Warn:     cfg.WarnLedgers,
 			Critical: cfg.CriticalLedgers,
 		},
-		Logger:  log,
-		ABI:     source,
-		Network: abi.NetworkName(cfg.NetworkPassphrase),
+		ThresholdOverrides: cfg.ThresholdOverrides,
+		Logger:             log,
+		ABI:                source,
+		Network:            abi.NetworkName(cfg.NetworkPassphrase),
 	})
 	if err != nil {
 		_ = client.Close()

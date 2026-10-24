@@ -103,6 +103,7 @@ type InspectResult struct {
 }
 
 type inspectPlan struct {
+	contract    xdr.ScAddress
 	instanceKey string
 	dataKeys    []encodedDataKey
 	keys        []string
@@ -185,7 +186,7 @@ func (p *Prober) Inspect(ctx context.Context, req InspectRequest) (*InspectResul
 	// last so that a contract that is not deployed is reported as such
 	// rather than as a failed estimate.
 	if req.EstimateExtend > 0 {
-		estimates, err := p.estimateExtends(ctx, contract, wasmHash, dataKeys, result, req.EstimateExtend)
+		estimates, err := p.estimateExtends(ctx, plan.contract, wasmHash, plan.dataKeys, result, req.EstimateExtend)
 		if err != nil {
 			return nil, err
 		}
@@ -371,7 +372,7 @@ func (p *Prober) planInspect(req InspectRequest) (*inspectPlan, error) {
 	for _, key := range dataKeys {
 		keys = append(keys, key.encoded)
 	}
-	return &inspectPlan{instanceKey: instanceKey, dataKeys: dataKeys, keys: keys, durability: durability}, nil
+	return &inspectPlan{contract: contract, instanceKey: instanceKey, dataKeys: dataKeys, keys: keys, durability: durability}, nil
 }
 
 func (p *Prober) inspectCode(ctx context.Context, hash xdr.Hash, closeTime time.Duration) (*EntryReport, error) {

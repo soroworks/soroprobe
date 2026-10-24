@@ -58,11 +58,15 @@ type BatchResult struct {
 	Items   []BatchItem `json:"items"`
 }
 
-// CheckBatch runs up to the requested number of checks and reports them in
-// input order. One check failing to run does not stop the others; its error is
-// recorded and the batch moves on. A check that outlives its own Timeout is
-// reported as one that could not be run. Only a malformed batch or a cancelled
-// context returns a Go error.
+// CheckBatch runs every check and reports them in input order. One check
+// failing to run does not stop the others; its error is recorded and the batch
+// moves on. Only a malformed batch or a canceled context returns a Go error.
+//
+// A plain batch prefetches every check's ledger entries in as few
+// getLedgerEntries calls as the RPC allows and then runs the simulations in
+// order. A batch that asks for concurrency, or gives any check its own
+// Timeout, runs each check independently instead, so every check can be
+// bounded and scheduled on its own.
 func (p *Prober) CheckBatch(ctx context.Context, req BatchRequest) (*BatchResult, error) {
 	if err := validateBatch(req); err != nil {
 		return nil, err
@@ -70,7 +74,21 @@ func (p *Prober) CheckBatch(ctx context.Context, req BatchRequest) (*BatchResult
 	if req.Concurrency < 0 {
 		return nil, fmt.Errorf("%w: concurrency must not be negative", ErrInvalidBatch)
 	}
+	if req.Concurrency > 1 {
+		return p.checkBatchConcurrent(ctx, req)
+	}
+	for _, check := range req.Checks {
+		if check.Timeout != "" {
+			return p.checkBatchConcurrent(ctx, req)
+		}
+	}
+	return p.checkBatchPrefetched(ctx, req)
+}
 
+// checkBatchConcurrent runs up to req.Concurrency checks at once, each under
+// its own Timeout. A check that outlives its Timeout is reported as one that
+// could not be run.
+func (p *Prober) checkBatchConcurrent(ctx context.Context, req BatchRequest) (*BatchResult, error) {
 	concurrency := req.Concurrency
 	if concurrency == 0 {
 		concurrency = 1
@@ -351,7 +369,7 @@ func (c NamedCheck) checkTimeout() (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil {
-		return 0, fmt.Errorf("%w: check %q: invalid timeout %q: %v", ErrInvalidBatch, checkName(c), c.Timeout, err)
+		return 0, fmt.Errorf("%w: check %q: invalid timeout %q: %w", ErrInvalidBatch, checkName(c), c.Timeout, err)
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("%w: check %q: timeout must not be negative, got %s", ErrInvalidBatch, checkName(c), d)
