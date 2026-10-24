@@ -7,17 +7,22 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/strkey"
+	"go.yaml.in/yaml/v3"
 )
 
 // Defaults. These target the public testnet so that a fresh checkout can run
@@ -60,6 +65,7 @@ const (
 	EnvWarnLedgers       = "WARN_LEDGERS"
 	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
 	EnvConfigFile        = "SOROPROBE_CONFIG"
+	EnvProfile           = "SOROPROBE_PROFILE"
 	EnvSoroVaultURL      = "SOROVAULT_URL"
 	EnvBaseFee           = "BASE_FEE"
 )
@@ -110,28 +116,48 @@ func Default() Config {
 }
 
 // fileConfig mirrors Config but with pointers, so that "absent" is
-// distinguishable from "set to the zero value".
+// distinguishable from "set to the zero value". It can also contain named profiles.
 type fileConfig struct {
-	RPCURL            *string `json:"rpc_url"`
-	NetworkPassphrase *string `json:"network_passphrase"`
-	SourceAccount     *string `json:"source_account"`
-	HTTPAddr          *string `json:"http_addr"`
-	LogLevel          *string `json:"log_level"`
-	Timeout           *string `json:"timeout"`
-	WarnLedgers       *uint32 `json:"warn_ledgers"`
-	CriticalLedgers   *uint32 `json:"critical_ledgers"`
-	SoroVaultURL      *string `json:"sorovault_url"`
-	BaseFee           *int64  `json:"base_fee"`
+	RPCURL            *string                `json:"rpc_url" yaml:"rpc_url"`
+	NetworkPassphrase *string                `json:"network_passphrase" yaml:"network_passphrase"`
+	SourceAccount     *string                `json:"source_account" yaml:"source_account"`
+	HTTPAddr          *string                `json:"http_addr" yaml:"http_addr"`
+	LogLevel          *string                `json:"log_level" yaml:"log_level"`
+	Timeout           *string                `json:"timeout" yaml:"timeout"`
+	WarnLedgers       *uint32                `json:"warn_ledgers" yaml:"warn_ledgers"`
+	CriticalLedgers   *uint32                `json:"critical_ledgers" yaml:"critical_ledgers"`
+	SoroVaultURL      *string                `json:"sorovault_url" yaml:"sorovault_url"`
+	BaseFee           *int64                 `json:"base_fee" yaml:"base_fee"`
+	Profiles          map[string]*fileConfig `json:"profiles" yaml:"profiles"`
+}
+
+// defaultCandidateFiles lists config filenames checked in order when no path is specified.
+var defaultCandidateFiles = []string{
+	"soroprobe.json",
+	"soroprobe.yaml",
+	"soroprobe.yml",
 }
 
 // Load builds a Config from defaults, then the config file at path (if
-// non-empty, or if SOROPROBE_CONFIG names one), then the environment.
+// non-empty, or if SOROPROBE_CONFIG names one), then the selected profile (if any),
+// then the environment.
 //
 // A path given explicitly must exist; a path discovered via SOROPROBE_CONFIG
-// must also exist. Only the implicit lookup of ./soroprobe.json is allowed to
-// come up empty.
+// must also exist. Only the implicit lookup of ./soroprobe.json, ./soroprobe.yaml,
+// or ./soroprobe.yml is allowed to come up empty.
 func Load(path string) (Config, error) {
+	return LoadWithProfile(path, "")
+}
+
+// LoadWithProfile builds a Config from defaults, then the config file at path,
+// then the profile named by profileName (or SOROPROBE_PROFILE if empty),
+// then the environment.
+func LoadWithProfile(path string, profileName string) (Config, error) {
 	cfg := Default()
+
+	if profileName == "" {
+		profileName = os.Getenv(EnvProfile)
+	}
 
 	explicit := path != ""
 	if !explicit {
@@ -139,10 +165,25 @@ func Load(path string) (Config, error) {
 		explicit = path != ""
 	}
 	if !explicit {
-		path = "soroprobe.json"
+		for _, candidate := range defaultCandidateFiles {
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			// None found; if a profile was requested, report an error.
+			if profileName != "" {
+				return cfg, fmt.Errorf("profile %q requested but no config file found", profileName)
+			}
+			if err := applyEnv(&cfg); err != nil {
+				return cfg, err
+			}
+			return cfg, nil
+		}
 	}
 
-	if err := applyFile(&cfg, path, explicit); err != nil {
+	if err := applyFileWithProfile(&cfg, path, explicit, profileName); err != nil {
 		return cfg, err
 	}
 	if err := applyEnv(&cfg); err != nil {
@@ -151,20 +192,26 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-func applyFile(cfg *Config, path string, required bool) error {
-	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && !required {
-			return nil
+func unmarshalConfigFile(path string, raw []byte, fc *fileConfig) error {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".yaml" || ext == ".yml" {
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		dec.KnownFields(true)
+		if err := dec.Decode(fc); err != nil && !errors.Is(err, io.EOF) {
+			return err
 		}
-		return fmt.Errorf("read config file %s: %w", path, err)
+		return nil
 	}
 
-	var fc fileConfig
-	if err := json.Unmarshal(raw, &fc); err != nil {
-		return fmt.Errorf("parse config file %s: %w", path, err)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(fc); err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
+	return nil
+}
 
+func applyValues(cfg *Config, path string, fc *fileConfig) error {
 	setString(&cfg.RPCURL, fc.RPCURL)
 	setString(&cfg.NetworkPassphrase, fc.NetworkPassphrase)
 	setString(&cfg.SourceAccount, fc.SourceAccount)
@@ -187,6 +234,50 @@ func applyFile(cfg *Config, path string, required bool) error {
 		}
 		cfg.Timeout = d
 	}
+	return nil
+}
+
+func applyFileWithProfile(cfg *Config, path string, required bool, profileName string) error {
+	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && !required {
+			if profileName != "" {
+				return fmt.Errorf("profile %q requested but config file %s not found: %w", profileName, path, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("read config file %s: %w", path, err)
+	}
+
+	var fc fileConfig
+	if err := unmarshalConfigFile(path, raw, &fc); err != nil {
+		return fmt.Errorf("parse config file %s: %w", path, err)
+	}
+
+	// 1. Apply top-level file keys
+	if err := applyValues(cfg, path, &fc); err != nil {
+		return err
+	}
+
+	// 2. Apply profile if specified
+	if profileName != "" {
+		pfc, ok := fc.Profiles[profileName]
+		if !ok || pfc == nil {
+			names := make([]string, 0, len(fc.Profiles))
+			for name := range fc.Profiles {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				return fmt.Errorf("unknown profile %q (no profiles defined in %s)", profileName, path)
+			}
+			return fmt.Errorf("unknown profile %q in %s (defined profiles: %s)", profileName, path, strings.Join(names, ", "))
+		}
+		if err := applyValues(cfg, path, pfc); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
