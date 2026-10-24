@@ -62,6 +62,7 @@ const (
 	EnvConfigFile        = "SOROPROBE_CONFIG"
 	EnvSoroVaultURL      = "SOROVAULT_URL"
 	EnvBaseFee           = "BASE_FEE"
+	EnvInspectCacheTTL   = "INSPECT_CACHE_TTL"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -90,6 +91,11 @@ type Config struct {
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
+	// InspectCacheTTL is how long `serve` may reuse an inspect result for the
+	// same contract and key set. Zero, the default, disables the cache; a few
+	// seconds suits dashboards, because TTLs change at most once per ledger.
+	InspectCacheTTL time.Duration `json:"inspect_cache_ttl"`
+
 	// BaseFee is the base inclusion fee per operation in stroops.
 	BaseFee int64 `json:"base_fee"`
 }
@@ -122,6 +128,7 @@ type fileConfig struct {
 	CriticalLedgers   *uint32 `json:"critical_ledgers"`
 	SoroVaultURL      *string `json:"sorovault_url"`
 	BaseFee           *int64  `json:"base_fee"`
+	InspectCacheTTL   *string `json:"inspect_cache_ttl"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -187,6 +194,13 @@ func applyFile(cfg *Config, path string, required bool) error {
 		}
 		cfg.Timeout = d
 	}
+	if fc.InspectCacheTTL != nil {
+		d, err := time.ParseDuration(*fc.InspectCacheTTL)
+		if err != nil {
+			return fmt.Errorf("parse config file %s: inspect_cache_ttl: %w", path, err)
+		}
+		cfg.InspectCacheTTL = d
+	}
 	return nil
 }
 
@@ -212,6 +226,13 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("parse %s: %w", EnvTimeout, err)
 		}
 		cfg.Timeout = d
+	}
+	if v := lookup(EnvInspectCacheTTL); v != nil {
+		d, err := time.ParseDuration(*v)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", EnvInspectCacheTTL, err)
+		}
+		cfg.InspectCacheTTL = d
 	}
 	if err := setUint32FromEnv(&cfg.WarnLedgers, EnvWarnLedgers); err != nil {
 		return err
@@ -282,6 +303,9 @@ func (c Config) Validate() error {
 	if c.CriticalLedgers > c.WarnLedgers {
 		return fmt.Errorf("critical threshold (%d) must not exceed warning threshold (%d)",
 			c.CriticalLedgers, c.WarnLedgers)
+	}
+	if c.InspectCacheTTL < 0 {
+		return fmt.Errorf("inspect cache ttl must not be negative, got %s", c.InspectCacheTTL)
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err

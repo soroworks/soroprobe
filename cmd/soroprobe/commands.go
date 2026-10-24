@@ -693,6 +693,7 @@ func inGitHubActions() bool {
 
 func newServeCmd(opts *options) *cobra.Command {
 	var addr string
+	var inspectCacheTTL time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -703,6 +704,9 @@ services. The API is read-only, exactly like the CLI.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if addr != "" {
 				opts.cfg.HTTPAddr = addr
+			}
+			if cmd.Flags().Changed("inspect-cache-ttl") {
+				opts.cfg.InspectCacheTTL = inspectCacheTTL
 			}
 
 			p, cleanup, err := opts.prober()
@@ -724,6 +728,8 @@ services. The API is read-only, exactly like the CLI.`,
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address, overriding HTTP_ADDR")
+	cmd.Flags().DurationVar(&inspectCacheTTL, "inspect-cache-ttl", 0,
+		"cache inspect results for this long; 0 disables (a few seconds suits dashboards, because TTLs change once per ledger)")
 	return cmd
 }
 
