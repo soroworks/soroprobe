@@ -740,7 +740,7 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |
 | `CRITICAL_LEDGERS` | `--critical-ledgers` | `17280` (≈1 day) |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
-| `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` if present |
+| `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` (then `./soroprobe.yaml`, `./soroprobe.yml`) if present |
 
 [.env.example](.env.example) documents every variable. SoroProbe reads the
 **environment**, not `.env` itself, so load it yourself:
@@ -750,7 +750,9 @@ set -a && . ./.env && set +a
 docker run --env-file .env soroprobe check <contract>
 ```
 
-A config file, by contrast, is read directly. It is JSON with snake_case keys:
+A config file, by contrast, is read directly. JSON and YAML formats (`soroprobe.json`, `soroprobe.yaml`, `soroprobe.yml`) are supported, with snake_case keys (unknown keys are rejected in both formats). When no path is specified, SoroProbe looks for `soroprobe.json`, then `soroprobe.yaml`, and finally `soroprobe.yml`.
+
+In JSON:
 
 ```json
 {
@@ -758,6 +760,15 @@ A config file, by contrast, is read directly. It is JSON with snake_case keys:
   "warn_ledgers": 120960,
   "critical_ledgers": 17280
 }
+```
+
+Or in YAML:
+
+```yaml
+# SoroProbe configuration
+rpc_url: https://soroban-testnet.stellar.org
+warn_ledgers: 120960
+critical_ledgers: 17280
 ```
 
 ## Why no secret key
