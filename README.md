@@ -493,7 +493,7 @@ entries, and expired entries are dropped on read.
 
 ### Global flags
 
-`--json`, `--config`, `--rpc-url`, `--network-passphrase`, `--source-account`,
+`--json`, `--config`, `--profile`, `--rpc-url`, `--network-passphrase`, `--source-account`,
 `--log-level`, `--log-format`, `--timeout`, `--warn-ledgers`,
 `--critical-ledgers`, `--sorovault-url`.
 
@@ -775,7 +775,7 @@ clients are never told to cache it.
 
 ## Configuration
 
-Precedence, lowest to highest: **defaults → config file → environment → flags**.
+Precedence, lowest to highest: **defaults → top-level config file keys → profile → environment → flags**.
 
 | Environment variable | Flag | Default |
 | --- | --- | --- |
@@ -795,7 +795,8 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `CODE_WARN_LEDGERS`, `CODE_CRITICAL_LEDGERS` | `--code-warn-ledgers`, `--code-critical-ledgers` | global thresholds |
 | `DATA_WARN_LEDGERS`, `DATA_CRITICAL_LEDGERS` | `--data-warn-ledgers`, `--data-critical-ledgers` | global thresholds |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
-| `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` if present |
+| `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` (then `./soroprobe.yaml`, `./soroprobe.yml`) if present |
+| `SOROPROBE_PROFILE` | `--profile` | unset |
 
 To type arguments from a contract's on-chain interface instead of SoroVault,
 pass `--abi-from-chain`. Stellar Asset Contracts have no Wasm interface and
@@ -815,15 +816,45 @@ set -a && . ./.env && set +a
 docker run --env-file .env soroprobe check <contract>
 ```
 
-A config file, by contrast, is read directly. It is JSON with snake_case keys:
+A config file, by contrast, is read directly. JSON and YAML formats (`soroprobe.json`, `soroprobe.yaml`, `soroprobe.yml`) are supported, with snake_case keys (unknown keys are rejected in both formats). When no path is specified, SoroProbe looks for `soroprobe.json`, then `soroprobe.yaml`, and finally `soroprobe.yml`.
+
+### Profiles
+
+Config files can define named `profiles` for different networks (such as `testnet`, `mainnet`, or `local`). Select a profile using `--profile <name>` or the `SOROPROBE_PROFILE` environment variable. An unknown profile name produces an error listing the available profiles.
+
+In JSON:
 
 ```json
 {
   "rpc_url": "https://soroban-testnet.stellar.org",
   "warn_ledgers": 120960,
   "critical_ledgers": 17280,
-  "inspect_cache_ttl": "0s"
+  "inspect_cache_ttl": "0s",
+  "profiles": {
+    "mainnet": {
+      "rpc_url": "https://rpc.mainnet.stellar.org",
+      "network_passphrase": "Public Global Stellar Network ; September 2015",
+      "warn_ledgers": 172800,
+      "critical_ledgers": 34560
+    }
+  }
 }
+```
+
+Or in YAML:
+
+```yaml
+# SoroProbe configuration
+rpc_url: https://soroban-testnet.stellar.org
+warn_ledgers: 120960
+critical_ledgers: 17280
+
+profiles:
+  mainnet:
+    rpc_url: https://rpc.mainnet.stellar.org
+    network_passphrase: "Public Global Stellar Network ; September 2015"
+    warn_ledgers: 172800
+    critical_ledgers: 34560
 ```
 
 ## Why no secret key
