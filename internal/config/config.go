@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -33,7 +34,16 @@ const (
 	// loopback inside a container would reach nothing.
 	DefaultHTTPAddr = "127.0.0.1:8080"
 	DefaultLogLevel = "info"
-	DefaultTimeout  = 30 * time.Second
+	// DefaultLogFormat keeps logs human-readable; json is the opt-in for CI
+	// and log aggregators, which filter on fields rather than regex.
+	DefaultLogFormat = "text"
+	DefaultTimeout   = 30 * time.Second
+
+	// MinAPITokenLength is the shortest API token the HTTP API will accept.
+	// An authenticated caller can spend the operator's RPC quota on demand, so
+	// a token short enough to guess is not meaningfully different from no token
+	// at all. The limit is a floor, not advice: use a long random value.
+	MinAPITokenLength = 16
 
 	// DefaultSourceAccount is the all-zero ed25519 account ID. Simulation reads
 	// the source account but never needs it to exist, be funded, or sign
@@ -45,6 +55,8 @@ const (
 	DefaultWarnLedgers = 120_960
 	// DefaultCriticalLedgers is ~1 day at 5s per ledger.
 	DefaultCriticalLedgers = 17_280
+	// DefaultBaseFee is the network minimum base fee in stroops.
+	DefaultBaseFee = int64(100)
 )
 
 // Environment variable names.
@@ -55,11 +67,15 @@ const (
 	EnvHTTPAddr                = "HTTP_ADDR"
 	EnvCORSOrigins             = "CORS_ORIGINS"
 	EnvLogLevel                = "LOG_LEVEL"
+	EnvLogFormat               = "LOG_FORMAT"
 	EnvTimeout                 = "RPC_TIMEOUT"
 	EnvWarnLedgers             = "WARN_LEDGERS"
 	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
 	EnvConfigFile              = "SOROPROBE_CONFIG"
 	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvBaseFee                 = "BASE_FEE"
+	EnvInspectCacheTTL         = "INSPECT_CACHE_TTL"
+	EnvAPIToken                = "API_TOKEN"
 	EnvInstanceWarnLedgers     = "INSTANCE_WARN_LEDGERS"
 	EnvInstanceCriticalLedgers = "INSTANCE_CRITICAL_LEDGERS"
 	EnvCodeWarnLedgers         = "CODE_WARN_LEDGERS"
@@ -83,6 +99,9 @@ type Config struct {
 	CORSOrigins []string `json:"-"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `json:"log_level"`
+	// LogFormat selects the log handler: "text" for humans, "json" for log
+	// aggregators that filter on fields instead of regex-parsing lines.
+	LogFormat string `json:"log_format"`
 	// Timeout bounds a single RPC request.
 	Timeout time.Duration `json:"timeout"`
 	// WarnLedgers is the remaining-TTL threshold, in ledgers, below which an
@@ -96,6 +115,20 @@ type Config struct {
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
+	// InspectCacheTTL is how long `serve` may reuse an inspect result for the
+	// same contract and key set. Zero, the default, disables the cache; a few
+	// seconds suits dashboards, because TTLs change at most once per ledger.
+	InspectCacheTTL time.Duration `json:"inspect_cache_ttl"`
+
+	// APIToken, when set, requires "Authorization: Bearer <token>" on the
+	// HTTP API's /v1 routes; /healthz stays open so a probe needs no
+	// credential. Empty keeps the API unauthenticated. It is a secret, so it
+	// is deliberately absent from the config file and the environment is the
+	// place to set it (or the --api-token flag).
+	APIToken string `json:"-"`
+
+	// BaseFee is the base inclusion fee per operation in stroops.
+	BaseFee int64 `json:"base_fee"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -106,9 +139,11 @@ func Default() Config {
 		SourceAccount:     DefaultSourceAccount,
 		HTTPAddr:          DefaultHTTPAddr,
 		LogLevel:          DefaultLogLevel,
+		LogFormat:         DefaultLogFormat,
 		Timeout:           DefaultTimeout,
 		WarnLedgers:       DefaultWarnLedgers,
 		CriticalLedgers:   DefaultCriticalLedgers,
+		BaseFee:           DefaultBaseFee,
 	}
 }
 
@@ -120,11 +155,14 @@ type fileConfig struct {
 	SourceAccount      *string                    `json:"source_account"`
 	HTTPAddr           *string                    `json:"http_addr"`
 	LogLevel           *string                    `json:"log_level"`
+	LogFormat          *string                    `json:"log_format"`
 	Timeout            *string                    `json:"timeout"`
 	WarnLedgers        *uint32                    `json:"warn_ledgers"`
 	CriticalLedgers    *uint32                    `json:"critical_ledgers"`
 	ThresholdOverrides *health.ThresholdOverrides `json:"thresholds"`
 	SoroVaultURL       *string                    `json:"sorovault_url"`
+	BaseFee            *int64                     `json:"base_fee"`
+	InspectCacheTTL    *string                    `json:"inspect_cache_ttl"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -173,6 +211,7 @@ func applyFile(cfg *Config, path string, required bool) error {
 	setString(&cfg.SourceAccount, fc.SourceAccount)
 	setString(&cfg.HTTPAddr, fc.HTTPAddr)
 	setString(&cfg.LogLevel, fc.LogLevel)
+	setString(&cfg.LogFormat, fc.LogFormat)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
@@ -183,12 +222,22 @@ func applyFile(cfg *Config, path string, required bool) error {
 	if fc.ThresholdOverrides != nil {
 		cfg.ThresholdOverrides = *fc.ThresholdOverrides
 	}
+	if fc.BaseFee != nil {
+		cfg.BaseFee = *fc.BaseFee
+	}
 	if fc.Timeout != nil {
 		d, err := time.ParseDuration(*fc.Timeout)
 		if err != nil {
 			return fmt.Errorf("parse config file %s: timeout: %w", path, err)
 		}
 		cfg.Timeout = d
+	}
+	if fc.InspectCacheTTL != nil {
+		d, err := time.ParseDuration(*fc.InspectCacheTTL)
+		if err != nil {
+			return fmt.Errorf("parse config file %s: inspect_cache_ttl: %w", path, err)
+		}
+		cfg.InspectCacheTTL = d
 	}
 	return nil
 }
@@ -207,7 +256,9 @@ func applyEnv(cfg *Config) error {
 		}
 	}
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
+	setString(&cfg.LogFormat, lookup(EnvLogFormat))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
+	setString(&cfg.APIToken, lookup(EnvAPIToken))
 
 	if v := lookup(EnvTimeout); v != nil {
 		d, err := time.ParseDuration(*v)
@@ -216,13 +267,36 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Timeout = d
 	}
+	if v := lookup(EnvInspectCacheTTL); v != nil {
+		d, err := time.ParseDuration(*v)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", EnvInspectCacheTTL, err)
+		}
+		cfg.InspectCacheTTL = d
+	}
 	if err := setUint32FromEnv(&cfg.WarnLedgers, EnvWarnLedgers); err != nil {
 		return err
 	}
 	if err := setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers); err != nil {
 		return err
 	}
+	if err := setInt64FromEnv(&cfg.BaseFee, EnvBaseFee); err != nil {
+		return err
+	}
 	return applyThresholdOverrideEnv(&cfg.ThresholdOverrides)
+}
+
+func setInt64FromEnv(dst *int64, key string) error {
+	v := lookup(key)
+	if v == nil {
+		return nil
+	}
+	n, err := strconv.ParseInt(*v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", key, err)
+	}
+	*dst = n
+	return nil
 }
 
 func applyThresholdOverrideEnv(overrides *health.ThresholdOverrides) error {
@@ -325,6 +399,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("critical threshold (%d) must not exceed warning threshold (%d)",
 			c.CriticalLedgers, c.WarnLedgers)
 	}
+	if c.InspectCacheTTL < 0 {
+		return fmt.Errorf("inspect cache ttl must not be negative, got %s", c.InspectCacheTTL)
+	}
 	global := health.Thresholds{Warn: c.WarnLedgers, Critical: c.CriticalLedgers}
 	for _, kind := range []health.EntryKind{health.EntryKindInstance, health.EntryKindCode, health.EntryKindData} {
 		thresholds := health.ResolveThresholds(kind, global, c.ThresholdOverrides)
@@ -334,6 +411,13 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err
+	}
+	if _, err := ParseLogFormat(c.LogFormat); err != nil {
+		return err
+	}
+	if c.APIToken != "" && len(c.APIToken) < MinAPITokenLength {
+		return fmt.Errorf("api token is %d characters; use at least %d (e.g. \"openssl rand -hex 32\")",
+			len(c.APIToken), MinAPITokenLength)
 	}
 	if c.SoroVaultURL != "" &&
 		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
@@ -358,11 +442,34 @@ func ParseLogLevel(name string) (slog.Level, error) {
 	}
 }
 
-// Logger builds the process logger described by this config.
-func (c Config) Logger(w *os.File) *slog.Logger {
+// ParseLogFormat maps a log format name onto its canonical form, "text" or
+// "json". The empty name means the default, text.
+func ParseLogFormat(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "text", "":
+		return "text", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unknown log format %q (want text or json)", name)
+	}
+}
+
+// Logger builds the process logger described by this config. Both formats
+// write to w; json emits one parseable object per line so a CI log aggregator
+// can filter on fields such as contract or status instead of regex-parsing
+// the text handler's output.
+func (c Config) Logger(w io.Writer) *slog.Logger {
 	level, err := ParseLogLevel(c.LogLevel)
 	if err != nil {
 		level = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
+	opts := &slog.HandlerOptions{Level: level}
+	// Validate rejects an unknown format before any command runs, so here a
+	// parse failure falls back to the readable default rather than failing
+	// a logging call.
+	if format, err := ParseLogFormat(c.LogFormat); err == nil && format == "json" {
+		return slog.New(slog.NewJSONHandler(w, opts))
+	}
+	return slog.New(slog.NewTextHandler(w, opts))
 }

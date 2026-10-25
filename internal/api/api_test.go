@@ -22,10 +22,18 @@ import (
 
 func newServer(t *testing.T, fake *stellartest.Fake) http.Handler {
 	t.Helper()
+	return newCachedServer(t, fake, 0)
+}
+
+// newCachedServer builds a server whose prober caches inspect results for ttl.
+// A zero ttl leaves the cache off.
+func newCachedServer(t *testing.T, fake *stellartest.Fake, ttl time.Duration) http.Handler {
+	t.Helper()
 
 	p, err := probe.New(probe.Options{
-		Client:        fake,
-		SourceAccount: stellartest.SourceAccount,
+		Client:          fake,
+		SourceAccount:   stellartest.SourceAccount,
+		InspectCacheTTL: ttl,
 	})
 	require.NoError(t, err)
 
@@ -540,6 +548,72 @@ func TestVersionedRoutesAreNotCached(t *testing.T) {
 	assert.Empty(t, rec.Header().Get("Cache-Control"))
 }
 
+func TestInspectEndpointCacheHitAvoidsRPC(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+
+	var first, second probe.InspectResult
+	target := "/v1/inspect/" + stellartest.SACContract
+	rec := do(t, h, http.MethodGet, target, "", &first)
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = do(t, h, http.MethodGet, target, "", &second)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Len(t, fake.EntryRequests, 1, "a cache hit must not make an RPC call")
+	assert.NotZero(t, first.LatestLedger)
+	assert.Equal(t, first.LatestLedger, second.LatestLedger,
+		"a cached response still states the ledger it was computed at")
+}
+
+func TestInspectEndpointCacheExpires(t *testing.T) {
+	t.Parallel()
+
+	const ttl = 25 * time.Millisecond
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, ttl)
+	target := "/v1/inspect/" + stellartest.SACContract
+
+	do(t, h, http.MethodGet, target, "", nil)
+	do(t, h, http.MethodGet, target, "", nil)
+	require.Len(t, fake.EntryRequests, 1)
+
+	time.Sleep(2 * ttl)
+
+	do(t, h, http.MethodGet, target, "", nil)
+	assert.Len(t, fake.EntryRequests, 2, "an expired entry must be recomputed")
+}
+
+func TestSimulateEndpointIsNeverCached(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+	body := `{"contract_id":"` + stellartest.SACContract + `","function":"decimals"}`
+
+	do(t, h, http.MethodPost, "/v1/simulate", body, nil)
+	do(t, h, http.MethodPost, "/v1/simulate", body, nil)
+
+	assert.Len(t, fake.SimulateRequests, 2, "simulations must never be cached")
+}
+
+func TestCheckEndpointCachesInspectButNotSimulation(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+	target := "/v1/check/" + stellartest.SACContract + "?fn=decimals"
+
+	do(t, h, http.MethodGet, target, "", nil)
+	do(t, h, http.MethodGet, target, "", nil)
+
+	// Check inspects and then simulates. The inspect half is cacheable; the
+	// liveness call is not.
+	assert.Len(t, fake.EntryRequests, 1)
+	assert.Len(t, fake.SimulateRequests, 2)
+}
+
 func TestReadinessHealthyRPC(t *testing.T) {
 	t.Parallel()
 
@@ -680,4 +754,157 @@ func TestLivenessStillIgnoresReadiness(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/healthz", "", &body)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "ok", body["status"])
+}
+
+// testToken is long enough to satisfy config.MinAPITokenLength.
+const testToken = "0123456789abcdef"
+
+// newServerWithToken builds a handler that requires bearer auth on /v1.
+func newServerWithToken(t *testing.T, token string) http.Handler {
+	t.Helper()
+
+	p, err := probe.New(probe.Options{
+		Client:        stellartest.NewFake(t),
+		SourceAccount: stellartest.SourceAccount,
+	})
+	require.NoError(t, err)
+
+	return api.New(api.Options{Prober: p, APIToken: token}).Handler()
+}
+
+// doAuth issues a request carrying the given Authorization header value. An
+// empty header sends no Authorization header at all.
+func doAuth(t *testing.T, h http.Handler, method, target, header string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, target, strings.NewReader(""))
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAuthMissingTokenIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	// WWW-Authenticate tells the client how to authenticate, per RFC 7235.
+	assert.Equal(t, `Bearer realm="soroprobe"`, rec.Header().Get("WWW-Authenticate"))
+	assert.Contains(t, rec.Body.String(), "missing bearer token")
+}
+
+func TestAuthWrongTokenIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	for _, header := range []string{
+		"Bearer " + testToken + "x",
+		"Bearer not-the-token-at-all",
+		"Bearer " + testToken[:len(testToken)-1],
+	} {
+		rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, header)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "header was: %s", header)
+		assert.Contains(t, rec.Body.String(), "invalid bearer token")
+	}
+}
+
+func TestAuthMalformedAuthorizationHeaderIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	for _, header := range []string{
+		"Basic " + testToken,
+		"Bearer",
+		"Bearer    ",
+		testToken, // the bare token, without the scheme
+	} {
+		rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, header)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "header was: %q", header)
+	}
+}
+
+func TestAuthCorrectTokenIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "Bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/simulate", strings.NewReader(
+		`{"contract_id":"`+stellartest.SACContract+`","function":"decimals"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAuthSchemeIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	// RFC 7235 treats the auth scheme as case-insensitive, so "bearer" must
+	// work exactly like "Bearer".
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHealthzNeedsNoTokenWhenAuthIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	// A liveness probe should not need a credential to prove the process is
+	// up, and it must not start failing just because the token rotated.
+	h := newServerWithToken(t, testToken)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/healthz", "", &body)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok", body["status"])
+}
+
+func TestAuthAppliesToEveryV1Route(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	routes := []struct {
+		method string
+		target string
+	}{
+		{http.MethodPost, "/v1/simulate"},
+		{http.MethodGet, "/v1/inspect/" + stellartest.SACContract},
+		{http.MethodGet, "/v1/check/" + stellartest.SACContract},
+		{http.MethodPost, "/v1/checks"},
+	}
+
+	for _, rt := range routes {
+		req := httptest.NewRequest(rt.method, rt.target, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "%s %s", rt.method, rt.target)
+	}
+}
+
+func TestAPIStaysOpenWhenNoTokenIsConfigured(t *testing.T) {
+	t.Parallel()
+
+	// Unset keeps the previous, unauthenticated behavior — no credential
+	// is required and none is rejected.
+	h := newServer(t, stellartest.NewFake(t))
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "")
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "Bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code, "a stray Authorization header is ignored when auth is off")
 }
