@@ -34,6 +34,9 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// RentPayer, when set, names the public key of the account designated to
+	// fund TTL extension fees for entries near expiration.
+	RentPayer string `json:"rent_payer,omitempty" yaml:"rent_payer,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -110,6 +113,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&dataTTLStep{},
 		&simulateStep{},
 		&expectStep{p: p},
+		&rentPayerStep{p: p},
 	}
 }
 
@@ -399,4 +403,146 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+
+// rentPayerStep verifies that the designated rent-paying account has enough
+// spendable XLM balance (after mandatory network reserves) to cover extension fees.
+type rentPayerStep struct{ p *Prober }
+
+func (s *rentPayerStep) Name() string { return "rent_payer" }
+
+func (s *rentPayerStep) Run(ctx context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if req.RentPayer == "" {
+		return nil, nil
+	}
+	chk, err := s.p.checkRentPayer(ctx, req.RentPayer, inspect)
+	if err != nil {
+		return []Check{{
+			Name:    "rent_payer",
+			Outcome: OutcomeWarn,
+			Detail:  fmt.Sprintf("could not verify rent payer %s: %v", req.RentPayer, err),
+		}}, nil
+	}
+	if chk == nil {
+		return nil, nil
+	}
+	return []Check{*chk}, nil
+}
+
+func (p *Prober) checkRentPayer(ctx context.Context, payerAddress string, inspect *InspectResult) (*Check, error) {
+	accountID, err := stellar.ParseAccountID(payerAddress)
+	if err != nil {
+		return &Check{
+			Name:    "rent_payer",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("invalid rent payer address %q: %v", payerAddress, err),
+		}, nil
+	}
+
+	key := stellar.AccountKey(accountID)
+	b64Key, err := stellar.EncodeKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := p.client.GetLedgerEntries(ctx, protocol.GetLedgerEntriesRequest{Keys: []string{b64Key}})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Entries) == 0 {
+		return &Check{
+			Name:    "rent_payer",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("rent payer account %s does not exist on-chain (0 XLM balance)", payerAddress),
+		}, nil
+	}
+
+	data, err := stellar.DecodeEntryData(resp.Entries[0].DataXDR)
+	if err != nil {
+		return nil, err
+	}
+	acc := data.MustAccount()
+	totalBalanceStroops := int64(acc.Balance)
+	numSubEntries := int64(acc.NumSubEntries)
+	const baseReserveStroops = int64(5_000_000) // 0.5 XLM base reserve
+	reserveStroops := (2 + numSubEntries) * baseReserveStroops
+	spendableStroops := totalBalanceStroops - reserveStroops
+	if spendableStroops < 0 {
+		spendableStroops = 0
+	}
+
+	// Identify entries needing extension
+	var expiringCount int
+	var hasCritical bool
+
+	if inspect.Instance.Status == health.StatusWarning || inspect.Instance.Status == health.StatusCritical {
+		expiringCount++
+		if inspect.Instance.Status == health.StatusCritical {
+			hasCritical = true
+		}
+	}
+	if inspect.Code != nil && (inspect.Code.Status == health.StatusWarning || inspect.Code.Status == health.StatusCritical) {
+		expiringCount++
+		if inspect.Code.Status == health.StatusCritical {
+			hasCritical = true
+		}
+	}
+	for _, d := range inspect.Data {
+		if d.Status == health.StatusWarning || d.Status == health.StatusCritical {
+			expiringCount++
+			if d.Status == health.StatusCritical {
+				hasCritical = true
+			}
+		}
+	}
+
+	if expiringCount == 0 {
+		return &Check{
+			Name:    "rent_payer",
+			Outcome: OutcomePass,
+			Detail: fmt.Sprintf("all entries have healthy TTL; rent payer has %s spendable (%s total, %s reserve for %d sub-entries)",
+				formatStroops(spendableStroops), formatStroops(totalBalanceStroops), formatStroops(reserveStroops), numSubEntries),
+		}, nil
+	}
+
+	// Calculate rent fee for expiring entries
+	var estimatedRentStroops int64
+	for _, est := range inspect.ExtendEstimates {
+		if est.ResourceFee > 0 {
+			estimatedRentStroops += est.ResourceFee
+		} else if est.MinResourceFee > 0 {
+			estimatedRentStroops += est.MinResourceFee
+		}
+	}
+	if estimatedRentStroops == 0 {
+		// Conservative fallback fee: 50,000 stroops (0.005 XLM) per entry
+		estimatedRentStroops = int64(expiringCount) * 50_000
+	}
+
+	if spendableStroops >= estimatedRentStroops {
+		return &Check{
+			Name:    "rent_payer",
+			Outcome: OutcomePass,
+			Detail: fmt.Sprintf("rent payer has %s spendable (%s total - %s reserves); estimated rent is %s for %d expiring entry/entries",
+				formatStroops(spendableStroops), formatStroops(totalBalanceStroops), formatStroops(reserveStroops), formatStroops(estimatedRentStroops), expiringCount),
+		}, nil
+	}
+
+	outcome := OutcomeWarn
+	if spendableStroops == 0 || hasCritical {
+		outcome = OutcomeFail
+	}
+	return &Check{
+		Name:    "rent_payer",
+		Outcome: outcome,
+		Detail: fmt.Sprintf("insufficient rent funds: rent payer has %s spendable (%s total - %s reserves), but %s is required to extend %d expiring entry/entries",
+			formatStroops(spendableStroops), formatStroops(totalBalanceStroops), formatStroops(reserveStroops), formatStroops(estimatedRentStroops), expiringCount),
+	}, nil
+}
+
+func formatStroops(stroops int64) string {
+	xlm := float64(stroops) / 10_000_000.0
+	return fmt.Sprintf("%.2f XLM (%d stroops)", xlm, stroops)
 }

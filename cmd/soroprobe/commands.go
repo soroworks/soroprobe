@@ -373,6 +373,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var format string
 	var quiet bool
+	var rentPayer string
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -474,6 +475,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				Expect:         expect,
 				DataKeys:       keys,
 				DataDurability: d,
+				RentPayer:      rentPayer,
 			})
 			if err != nil {
 				return err
@@ -507,6 +509,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json or markdown")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file checks to run at once")
+	cmd.Flags().StringVar(&rentPayer, "rent-payer", "", "public key of account designated to pay rent extensions")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false,
 		"print no report; the exit code is the whole answer (errors still reach stderr)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
