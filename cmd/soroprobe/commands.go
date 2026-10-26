@@ -18,6 +18,7 @@ import (
 	"github.com/soroworks/soroprobe/internal/api"
 	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/health"
+	"github.com/soroworks/soroprobe/internal/integration/soroforge"
 	"github.com/soroworks/soroprobe/internal/probe"
 )
 
@@ -373,6 +374,9 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var format string
 	var quiet bool
+	var fromSoroForge string
+	var soroForgeToken string
+	var networkFlag string
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -421,6 +425,15 @@ Inside GitHub Actions (GITHUB_ACTIONS is set) each failed or warned step also
 prints an ::error:: or ::warning:: line, which surfaces on the run summary
 instead of hiding in the log. --json and --quiet suppress them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
+			if fromSoroForge != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("give a contract ID or --from-soroforge, not both")
+				}
+				if file != "" {
+					return fmt.Errorf("give --file or --from-soroforge, not both")
+				}
+				return nil
+			}
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract ID or --file, not both")
@@ -446,6 +459,10 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				return err
 			}
 			defer func() { err = errors.Join(err, report.close()) }()
+
+			if fromSoroForge != "" {
+				return runCheckSoroForge(cmd, opts, fromSoroForge, soroForgeToken, networkFlag, checkTimeout, concurrency, report, quiet, outputFormat)
+			}
 
 			if file != "" {
 				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet, outputFormat)
@@ -502,6 +519,9 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys for the TTL check, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
+	cmd.Flags().StringVar(&fromSoroForge, "from-soroforge", "", "fetch tracked contracts from SoroForge and check each")
+	cmd.Flags().StringVar(&soroForgeToken, "soroforge-token", "", "read-only token for SoroForge authentication (defaults to SOROFORGE_TOKEN env)")
+	cmd.Flags().StringVar(&networkFlag, "network", "", "filter SoroForge tracked contracts by network (e.g. testnet, public)")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
@@ -833,4 +853,120 @@ func parseDurability(s string) (health.Durability, error) {
 	default:
 		return "", fmt.Errorf("unknown durability %q (want persistent or temporary)", s)
 	}
+}
+
+
+func runCheckSoroForge(cmd *cobra.Command, opts *options, soroForgeURL, token, network string,
+	checkTimeout time.Duration, concurrency int, report *reportFile, quiet bool, format string) error {
+	if token == "" {
+		token = os.Getenv("SOROFORGE_TOKEN")
+	}
+
+	sfClient, err := soroforge.New(soroForgeURL, token, nil)
+	if err != nil {
+		return err
+	}
+
+	tracked, err := sfClient.ListContracts(cmd.Context(), network)
+	if err != nil {
+		return err
+	}
+
+	if len(tracked) == 0 {
+		return fmt.Errorf("soroforge: no contracts found for network %q", network)
+	}
+
+	p, cleanup, err := opts.prober()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	batchReq := probe.BatchRequest{
+		Concurrency: concurrency,
+		Checks:      make([]probe.NamedCheck, 0, len(tracked)),
+	}
+	wasmHashes := make(map[string]string)
+	for _, tc := range tracked {
+		name := tc.Name
+		if name == "" {
+			name = tc.ContractID
+		}
+		batchReq.Checks = append(batchReq.Checks, probe.NamedCheck{
+			Name: name,
+			CheckRequest: probe.CheckRequest{
+				ContractID: tc.ContractID,
+			},
+		})
+		if tc.WasmHash != "" {
+			wasmHashes[tc.ContractID] = tc.WasmHash
+		}
+	}
+
+	applyDefaultTimeout(&batchReq, checkTimeout)
+	result, err := p.CheckBatch(cmd.Context(), batchReq)
+	if err != nil {
+		return err
+	}
+
+	// Compare SoroForge recorded WASM hash with live WASM hash to report drift.
+	for i := range result.Checks {
+		item := &result.Checks[i]
+		if item.Result == nil || item.Result.Inspect == nil {
+			continue
+		}
+		recordedHash, ok := wasmHashes[item.ContractID]
+		if !ok || recordedHash == "" {
+			continue
+		}
+		liveHash := item.Result.Inspect.WasmHash
+		if liveHash == "" {
+			continue
+		}
+
+		if !strings.EqualFold(recordedHash, liveHash) {
+			item.Result.Checks = append(item.Result.Checks, probe.Check{
+				Name:    "soroforge_drift",
+				Outcome: probe.OutcomeWarn,
+				Detail:  fmt.Sprintf("WASM drift detected: SoroForge recorded %s, live is %s", recordedHash, liveHash),
+			})
+		} else {
+			item.Result.Checks = append(item.Result.Checks, probe.Check{
+				Name:    "soroforge_drift",
+				Outcome: probe.OutcomePass,
+				Detail:  fmt.Sprintf("WASM matches SoroForge recorded hash (%s)", recordedHash),
+			})
+		}
+	}
+
+	if err := report.write(result); err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	if !quiet {
+		switch format {
+		case "json":
+			err = writeJSON(out, result)
+		case "markdown":
+			err = renderMarkdownBatch(out, result)
+		default:
+			err = renderBatch(out, result)
+		}
+		if err != nil {
+			return err
+		}
+
+		if format == "text" {
+			emitBatchAnnotations(out, result, inGitHubActions())
+		}
+	}
+
+	if result.Unrunnable > 0 {
+		return &checkFailedError{msg: fmt.Sprintf("%d check(s) could not run", result.Unrunnable), code: exitCodeUnrunnable}
+	}
+	if !result.OK {
+		return &checkFailedError{msg: "one or more checks failed"}
+	}
+	return nil
 }
