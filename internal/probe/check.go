@@ -34,6 +34,8 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// Upgradeability, when set, analyzes whether the contract exposes upgrade-like functions.
+	Upgradeability bool `json:"upgradeability,omitempty" yaml:"upgradeability,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -70,6 +72,8 @@ type CheckResult struct {
 	Inspect *InspectResult `json:"inspect,omitempty"`
 	// Simulate is the invocation result, when a function was given.
 	Simulate *SimulateResult `json:"simulate,omitempty"`
+	// Upgradeability reports upgrade-related capabilities and code modification history.
+	Upgradeability *UpgradeabilityReport `json:"upgradeability,omitempty"`
 	// LatestLedger is the ledger the assessment was made against.
 	LatestLedger uint32 `json:"latest_ledger"`
 	// CloseTimeNote explains the measured duration estimate or its fallback.
@@ -110,6 +114,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&dataTTLStep{},
 		&simulateStep{},
 		&expectStep{p: p},
+		&upgradeabilityStep{p: p},
 	}
 }
 
@@ -166,6 +171,12 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 		Simulate:      sim,
 		LatestLedger:  inspect.LatestLedger,
 		CloseTimeNote: inspect.CloseTimeNote,
+	}
+
+	if req.Upgradeability {
+		if rep, err := p.CheckUpgradeability(ctx, req.ContractID, inspect); err == nil {
+			result.Upgradeability = rep
+		}
 	}
 
 	for _, step := range p.checkSteps() {
@@ -399,4 +410,45 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+
+// upgradeabilityStep reports whether the contract is upgradeable and when its code was last modified.
+type upgradeabilityStep struct{ p *Prober }
+
+func (s *upgradeabilityStep) Name() string { return "upgradeability" }
+
+func (s *upgradeabilityStep) Run(ctx context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if !req.Upgradeability {
+		return nil, nil
+	}
+
+	rep, err := s.p.CheckUpgradeability(ctx, req.ContractID, inspect)
+	if err != nil {
+		return []Check{{
+			Name:    "upgradeability",
+			Outcome: OutcomeWarn,
+			Detail:  fmt.Sprintf("could not evaluate upgradeability: %v", err),
+		}}, nil
+	}
+
+	if rep.Upgradeable {
+		var fns []string
+		for _, f := range rep.UpgradeFunctions {
+			fns = append(fns, f.Name)
+		}
+		return []Check{{
+			Name:    "upgradeability",
+			Outcome: OutcomeWarn,
+			Detail:  fmt.Sprintf("contract is upgradeable via [%s] (%s); code last modified at ledger %d (%d ledgers ago) [heuristic: best-effort]",
+				strings.Join(fns, ", "), rep.AdminRequired, rep.LastModifiedLedger, rep.LedgersSinceUpgrade),
+		}}, nil
+	}
+
+	return []Check{{
+		Name:    "upgradeability",
+		Outcome: OutcomePass,
+		Detail:  fmt.Sprintf("no upgrade functions exposed; code immutable since ledger %d (%d ledgers ago) [heuristic: best-effort]",
+			rep.LastModifiedLedger, rep.LedgersSinceUpgrade),
+	}}, nil
 }
