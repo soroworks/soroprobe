@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"strings"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -103,14 +104,31 @@ var errStop = errors.New("stop checking")
 // an RPC call by itself. It is built per Prober because some steps, such as the
 // return-value assertion, need the prober's argument codec.
 func (p *Prober) checkSteps() []CheckStep {
-	return []CheckStep{
+	steps := []CheckStep{
 		&deployedStep{},
 		&instanceTTLStep{},
 		&codeTTLStep{},
 		&dataTTLStep{},
-		&simulateStep{},
-		&expectStep{p: p},
 	}
+	if p.lastWasmCheck != nil {
+		steps = append(steps, &wasmMatchStep{check: p.lastWasmCheck})
+	}
+	steps = append(steps, &simulateStep{}, &expectStep{p: p})
+	return steps
+}
+
+// wasmMatchStep reports whether the live contract's WASM hash matches SoroVault's catalogued build.
+type wasmMatchStep struct {
+	check *Check
+}
+
+func (s *wasmMatchStep) Name() string { return "wasm_match" }
+
+func (s *wasmMatchStep) Run(_ context.Context, _ CheckRequest, _ *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if s.check == nil {
+		return nil, nil
+	}
+	return []Check{*s.check}, nil
 }
 
 // expectStep asserts the simulated call's return value when the request names
@@ -134,6 +152,9 @@ func (s *expectStep) Run(_ context.Context, req CheckRequest, _ *InspectResult, 
 // inspect report and the simulation once and hands both to every step, so
 // adding a step cannot accidentally add an RPC call.
 func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, error) {
+	p.disableTypedDecoding = false
+	p.lastWasmCheck = nil
+
 	inspect, err := p.Inspect(ctx, InspectRequest{
 		ContractID:     req.ContractID,
 		DataKeys:       req.DataKeys,
@@ -141,6 +162,36 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if inspect.Deployed && inspect.WasmHash != "" {
+		if verifier, ok := p.abi.(abi.WasmVerifier); ok && verifier != nil {
+			registeredHash, err := verifier.RegisteredWasmHash(ctx, p.network, req.ContractID)
+			if err != nil {
+				if !errors.Is(err, abi.ErrUnknownContract) {
+					p.lastWasmCheck = &Check{
+						Name:    "wasm_match",
+						Outcome: OutcomeWarn,
+						Detail:  fmt.Sprintf("could not verify WASM hash with SoroVault: %v", err),
+					}
+				}
+			} else if registeredHash != "" {
+				if !strings.EqualFold(registeredHash, inspect.WasmHash) {
+					p.disableTypedDecoding = true
+					p.lastWasmCheck = &Check{
+						Name:    "wasm_match",
+						Outcome: OutcomeWarn,
+						Detail:  fmt.Sprintf("live WASM hash (%s) differs from SoroVault catalogued build (%s); disabled typed decoding", inspect.WasmHash, registeredHash),
+					}
+				} else {
+					p.lastWasmCheck = &Check{
+						Name:    "wasm_match",
+						Outcome: OutcomePass,
+						Detail:  fmt.Sprintf("live WASM matches SoroVault build (%s)", inspect.WasmHash),
+					}
+				}
+			}
+		}
 	}
 
 	// Gather the simulation once, and only when a step can use it: an
