@@ -219,6 +219,13 @@ func newLiveProber(cfg config.Config, abiFromChain bool) (*probe.Prober, func(),
 			return nil, nil, err
 		}
 		source = vault
+	} else if cfg.ABIFile != "" {
+		fileSrc, err := abi.NewFileSource(cfg.ABIFile)
+		if err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+		source = fileSrc
 	}
 
 	p, err := probe.New(probe.Options{
