@@ -34,6 +34,8 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// Standard, when set, verifies interface compliance against a standard specification (e.g. "sep41").
+	Standard string `json:"standard,omitempty" yaml:"standard,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -110,6 +112,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&dataTTLStep{},
 		&simulateStep{},
 		&expectStep{p: p},
+		&standardComplianceStep{p: p},
 	}
 }
 
@@ -399,4 +402,17 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+
+// standardComplianceStep validates contract interface against a standard (e.g. SEP-41).
+type standardComplianceStep struct{ p *Prober }
+
+func (s *standardComplianceStep) Name() string { return "standard" }
+
+func (s *standardComplianceStep) Run(ctx context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if req.Standard == "" {
+		return nil, nil
+	}
+	return s.p.CheckStandardCompliance(ctx, req.ContractID, req.Standard)
 }
