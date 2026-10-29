@@ -134,6 +134,9 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 				return err
 			}
 			value = string(encoded)
+			if r.ReturnValueFormatted != nil {
+				value = fmt.Sprintf("%s (%s)", value, *r.ReturnValueFormatted)
+			}
 		}
 		bw.printf("\n%s\n  %s\n", s.bold("return value"), value)
 	}

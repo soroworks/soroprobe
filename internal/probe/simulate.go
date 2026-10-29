@@ -9,6 +9,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/soroworks/soroprobe/internal/abi"
+	"github.com/soroworks/soroprobe/internal/scval"
 	"github.com/soroworks/soroprobe/internal/stellar"
 )
 
@@ -37,6 +38,9 @@ type SimulateRequest struct {
 	// before the call is reported as noisy. A nil value reports the spread
 	// without judging it.
 	MaxSpreadPercent *float64 `json:"max_spread_percent,omitempty"`
+	// Decimals, when set, formats integer return values as token amounts
+	// with this decimal count.
+	Decimals *int `json:"decimals,omitempty"`
 }
 
 // ErrBaselineMismatch is returned when a baseline names a different contract
@@ -235,6 +239,9 @@ type SimulateResult struct {
 
 	// ReturnValue is the decoded return value, JSON-marshalable.
 	ReturnValue any `json:"return_value"`
+	// ReturnValueFormatted is the ReturnValue scaled by the requested decimals,
+	// present only when --decimals was given and ReturnValue is an integer.
+	ReturnValueFormatted *string `json:"return_value_formatted,omitempty"`
 	// ReturnValueXDR is the raw base64 ScVal, for exact round-tripping.
 	ReturnValueXDR string `json:"return_value_xdr,omitempty"`
 
@@ -525,6 +532,11 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 			return nil, fmt.Errorf("decode return value: %w", err)
 		}
 		result.ReturnValue = decoded
+		if req.Decimals != nil {
+			if formatted, ok := scval.FormatTokenAmount(decoded, *req.Decimals); ok {
+				result.ReturnValueFormatted = &formatted
+			}
+		}
 	}
 
 	if len(resp.Results) > 0 && resp.Results[0].AuthXDR != nil && len(*resp.Results[0].AuthXDR) > 0 {
