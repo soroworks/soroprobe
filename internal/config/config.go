@@ -539,6 +539,9 @@ func (c Config) Validate() error {
 	if c.Timeout <= 0 {
 		return fmt.Errorf("timeout must be positive, got %s", c.Timeout)
 	}
+	if c.Retries < 0 {
+		return fmt.Errorf("retries cannot be negative, got %d", c.Retries)
+	}
 	if c.CriticalLedgers > c.WarnLedgers {
 		return fmt.Errorf("critical threshold (%d) must not exceed warning threshold (%d)",
 			c.CriticalLedgers, c.WarnLedgers)
