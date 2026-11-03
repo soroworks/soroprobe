@@ -114,6 +114,17 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	if len(r.EncodedArgs) > 0 {
 		bw.printf("%s %s\n", s.bold("encoded "), strings.Join(r.EncodedArgs, " "))
 	}
+	if len(r.NamedArgs) > 0 {
+		bw.printf("%s\n", s.bold("arguments"))
+		for _, arg := range r.NamedArgs {
+			val := formatArgValue(arg.Value)
+			if arg.Name != "" {
+				bw.printf("  %s (%s): %s\n", arg.Name, arg.Type, val)
+			} else {
+				bw.printf("  %s: %s\n", arg.Type, val)
+			}
+		}
+	}
 	if r.ABINote != "" {
 		bw.printf("%s\n", s.dim("note: "+r.ABINote))
 	}
@@ -493,14 +504,28 @@ func markdownCell(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "|", "\\|", "`", "\\`", "\r\n", "<br>", "\n", "<br>", "\r", "<br>").Replace(value)
 }
 
+func formatArgValue(arg any) string {
+	b, err := json.Marshal(arg)
+	if err != nil {
+		return fmt.Sprint(arg)
+	}
+	return string(b)
+}
+
 func renderAuthorizedInvocation(bw *bufWriter, s styler, inv *probe.AuthorizedInvocation, indent string) {
 	var args []string
-	for _, arg := range inv.Args {
-		b, err := json.Marshal(arg)
-		if err != nil {
-			args = append(args, fmt.Sprint(arg))
-		} else {
-			args = append(args, string(b))
+	if len(inv.NamedArgs) > 0 {
+		for _, arg := range inv.NamedArgs {
+			val := formatArgValue(arg.Value)
+			if arg.Name != "" {
+				args = append(args, fmt.Sprintf("%s: %s = %s", arg.Name, arg.Type, val))
+			} else {
+				args = append(args, val)
+			}
+		}
+	} else {
+		for _, arg := range inv.Args {
+			args = append(args, formatArgValue(arg))
 		}
 	}
 	target := inv.Function
