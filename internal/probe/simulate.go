@@ -37,6 +37,9 @@ type SimulateRequest struct {
 	// before the call is reported as noisy. A nil value reports the spread
 	// without judging it.
 	MaxSpreadPercent *float64 `json:"max_spread_percent,omitempty"`
+	// Trace, when true, reconstructs the nested cross-contract call tree
+	// from the simulation's fn_call, fn_return, and error diagnostic events.
+	Trace bool `json:"trace,omitempty"`
 }
 
 // ErrBaselineMismatch is returned when a baseline names a different contract
@@ -255,6 +258,10 @@ type SimulateResult struct {
 	// Events are decoded diagnostic events from the simulation.
 	Events []Event `json:"events,omitempty"`
 
+	// CallTree is the nested cross-contract invocation tree reconstructed
+	// from diagnostic events when Trace is requested.
+	CallTree []*CallFrame `json:"call_tree,omitempty"`
+
 	// Auth lists the authorization entries the call requires.
 	Auth []AuthEntry `json:"auth,omitempty"`
 
@@ -345,7 +352,7 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 			return nil, err
 		}
 
-		built, err := p.buildSimulateResult(req, resp)
+		built, err := p.buildSimulateResult(ctx, req, resp)
 		if err != nil {
 			return nil, err
 		}
@@ -475,7 +482,7 @@ func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, 
 	return out, nil
 }
 
-func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.SimulateTransactionResponse) (*SimulateResult, error) {
+func (p *Prober) buildSimulateResult(ctx context.Context, req SimulateRequest, resp protocol.SimulateTransactionResponse) (*SimulateResult, error) {
 	result := &SimulateResult{
 		ContractID:   req.ContractID,
 		Function:     req.Function,
@@ -540,6 +547,15 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 		p.log.Debug("could not decode diagnostic events", "err", err)
 	} else {
 		result.Events = events
+	}
+
+	if req.Trace {
+		tree, err := p.buildCallTree(ctx, resp.EventsXDR, resp.Error)
+		if err != nil {
+			p.log.Debug("could not build call tree", "err", err)
+		} else {
+			result.CallTree = tree
+		}
 	}
 
 	return result, nil

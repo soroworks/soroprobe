@@ -146,6 +146,13 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	bw.printf("  min resource fee   %s\n", stroops(r.Cost.MinResourceFee))
 	bw.printf("  estimated total fee %s\n", stroops(r.Cost.EstimatedTotalFee))
 
+	if len(r.CallTree) > 0 {
+		bw.printf("\n%s\n", s.bold("call tree"))
+		for _, frame := range r.CallTree {
+			renderCallFrame(bw, s, frame, "  ")
+		}
+	}
+
 	if len(r.Auth) > 0 {
 		bw.printf("\n%s\n", s.bold("authorizations"))
 		for _, a := range r.Auth {
@@ -510,6 +517,41 @@ func renderAuthorizedInvocation(bw *bufWriter, s styler, inv *probe.AuthorizedIn
 	bw.printf("%s%s(%s)\n", indent, target, strings.Join(args, ", "))
 	for _, sub := range inv.SubInvocations {
 		renderAuthorizedInvocation(bw, s, &sub, indent+"  ")
+	}
+}
+
+func renderCallFrame(bw *bufWriter, s styler, frame *probe.CallFrame, indent string) {
+	var args []string
+	for _, arg := range frame.Args {
+		b, err := json.Marshal(arg)
+		if err != nil {
+			args = append(args, fmt.Sprint(arg))
+		} else {
+			args = append(args, string(b))
+		}
+	}
+	target := frame.Function
+	if frame.ContractID != "" {
+		target = frame.ContractID + "::" + frame.Function
+	}
+	line := fmt.Sprintf("%s%s(%s)", indent, target, strings.Join(args, ", "))
+	if frame.HasReturn {
+		ret := "(void)"
+		if frame.ReturnValue != nil {
+			if b, err := json.Marshal(frame.ReturnValue); err == nil {
+				ret = string(b)
+			} else {
+				ret = fmt.Sprint(frame.ReturnValue)
+			}
+		}
+		line += " -> " + ret
+	}
+	bw.printf("%s\n", line)
+	if frame.Error != "" {
+		bw.printf("%s  %s %s\n", indent, s.red("error:"), frame.Error)
+	}
+	for _, child := range frame.Calls {
+		renderCallFrame(bw, s, child, indent+"  ")
 	}
 }
 

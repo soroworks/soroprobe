@@ -58,6 +58,7 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
+	var trace bool
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -147,6 +148,7 @@ estimate cannot make a cost check pass by luck.
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
+				Trace:              trace,
 			})
 			if err != nil {
 				return err
@@ -188,6 +190,7 @@ estimate cannot make a cost check pass by luck.
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
+	cmd.Flags().BoolVar(&trace, "trace", false, "show the cross-contract call tree reconstructed from diagnostic events")
 	return cmd
 }
 
