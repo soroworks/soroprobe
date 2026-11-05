@@ -35,8 +35,10 @@ type options struct {
 	jsonOut    bool
 	// newProber builds the Prober commands run against. A nil factory means
 	// the live one, so a zero-value options still behaves like production.
-	newProber    proberFactory
-	abiFromChain bool
+	newProber     proberFactory
+	abiFromChain  bool
+	verifyClient  stellar.Client
+	verifyBuilder VerifyBuilder
 }
 
 func newRootCmd() (*cobra.Command, *options) {
@@ -87,6 +89,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 		newSimulateCmd(opts),
 		newInspectCmd(opts),
 		newCheckCmd(opts),
+		newVerifyCmd(opts),
 		newServeCmd(opts),
 		newVersionCmd(),
 	)
