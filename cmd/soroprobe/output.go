@@ -113,6 +113,12 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	}
 	if len(r.EncodedArgs) > 0 {
 		bw.printf("%s %s\n", s.bold("encoded "), strings.Join(r.EncodedArgs, " "))
+	} else if len(r.DecodedArgs) > 0 {
+		encoded, err := json.Marshal(r.DecodedArgs)
+		if err != nil {
+			return err
+		}
+		bw.printf("%s %s\n", s.bold("args    "), string(encoded))
 	}
 	if r.ABINote != "" {
 		bw.printf("%s\n", s.dim("note: "+r.ABINote))

@@ -54,18 +54,24 @@ is handed an inferred i128.`
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var file string
+	var envelope string
+	var envelopeFile string
 	var baselinePath string
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
 
 	cmd := &cobra.Command{
-		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
+		Use:   "simulate <contract-id> <function> [args...] | simulate --envelope <base64> | simulate --file <calls.json>",
 		Short: "Simulate a contract invocation and report its result and cost",
 		Long: `Build a contract invocation, simulate it against the network, and report
 whether it would succeed, what it would return, and what it would cost.
 
 Nothing is submitted and no signing takes place.
+
+--envelope and --envelope-file simulate a prebuilt base64 XDR transaction
+envelope as given, decoding the invocation and any sub-invocations with the
+target contract's interface when available.
 
 --file reads named calls from a JSON file ("-" for stdin). Each call contains
 name, contract_id, function and optional args. Calls run sequentially and
@@ -89,9 +95,13 @@ estimate cannot make a cost check pass by luck.
 
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
+			hasEnvelope := envelope != "" || envelopeFile != ""
+			if envelope != "" && envelopeFile != "" {
+				return fmt.Errorf("give --envelope or --envelope-file, not both")
+			}
 			if file != "" {
-				if len(args) > 0 {
-					return fmt.Errorf("give a contract call or --file, not both")
+				if hasEnvelope || len(args) > 0 {
+					return fmt.Errorf("give a contract call, --envelope, or --file, not more than one")
 				}
 				if baselinePath != "" {
 					return fmt.Errorf("--baseline compares one call, so it cannot be used with --file")
@@ -107,6 +117,12 @@ estimate cannot make a cost check pass by luck.
 				}
 				return nil
 			}
+			if hasEnvelope {
+				if len(args) > 0 {
+					return fmt.Errorf("give positional <contract-id> <function> arguments or --envelope/--envelope-file, not both")
+				}
+				return nil
+			}
 			return cobra.MinimumNArgs(2)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
@@ -118,6 +134,14 @@ estimate cannot make a cost check pass by luck.
 
 			if file != "" {
 				return runSimulateFile(cmd, opts, file, report)
+			}
+
+			rawEnvelope := strings.TrimSpace(envelope)
+			if envelopeFile != "" {
+				rawEnvelope, err = readEnvelopeFile(cmd.InOrStdin(), envelopeFile)
+				if err != nil {
+					return err
+				}
 			}
 
 			baseline, err := readBaseline(baselinePath)
@@ -139,15 +163,21 @@ estimate cannot make a cost check pass by luck.
 			}
 			defer cleanup()
 
-			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
-				ContractID:         args[0],
-				Function:           args[1],
-				Args:               args[2:],
+			simReq := probe.SimulateRequest{
 				Baseline:           baseline,
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
-			})
+			}
+			if rawEnvelope != "" {
+				simReq.Envelope = rawEnvelope
+			} else {
+				simReq.ContractID = args[0]
+				simReq.Function = args[1]
+				simReq.Args = args[2:]
+			}
+
+			result, err := p.Simulate(cmd.Context(), simReq)
 			if err != nil {
 				return err
 			}
@@ -184,11 +214,34 @@ estimate cannot make a cost check pass by luck.
 
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
+	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate a prebuilt base64 XDR transaction envelope")
+	cmd.Flags().StringVar(&envelopeFile, "envelope-file", "", `read a prebuilt base64 XDR transaction envelope from a file ("-" for stdin)`)
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
 	return cmd
+}
+
+func readEnvelopeFile(stdin io.Reader, path string) (string, error) {
+	r := stdin
+	if path != "-" {
+		f, err := os.Open(path) //nolint:gosec // --envelope-file is an operator-supplied path.
+		if err != nil {
+			return "", fmt.Errorf("read envelope file %s: %w", path, err)
+		}
+		defer func() { _ = f.Close() }()
+		r = f
+	}
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("read envelope file %s: %w", path, err)
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "", fmt.Errorf("envelope file %s is empty", path)
+	}
+	return trimmed, nil
 }
 
 // readBaseline reads a saved simulation report to compare a cost against.
