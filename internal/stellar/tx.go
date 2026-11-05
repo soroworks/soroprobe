@@ -1,11 +1,79 @@
 package stellar
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
+
+// ErrInvalidEnvelope reports a transaction envelope that cannot be simulated
+// as a Soroban contract invocation.
+var ErrInvalidEnvelope = errors.New("invalid transaction envelope")
+
+// ParsedInvocation holds the contract call extracted from a prebuilt
+// transaction envelope.
+type ParsedInvocation struct {
+	Envelope   string
+	ContractID string
+	Function   string
+	Args       []xdr.ScVal
+	Auth       []xdr.SorobanAuthorizationEntry
+}
+
+// ParseInvocationEnvelope decodes a base64-encoded TransactionEnvelope and
+// extracts its single Soroban InvokeContract operation. Multi-operation or
+// non-Soroban envelopes are rejected with a descriptive error wrapping
+// ErrInvalidEnvelope.
+func ParseInvocationEnvelope(rawBase64 string) (*ParsedInvocation, error) {
+	trimmed := strings.TrimSpace(rawBase64)
+	if trimmed == "" {
+		return nil, fmt.Errorf("%w: transaction envelope is empty", ErrInvalidEnvelope)
+	}
+
+	var env xdr.TransactionEnvelope
+	if err := xdr.SafeUnmarshalBase64(trimmed, &env); err != nil {
+		return nil, fmt.Errorf("%w: could not decode base64 XDR transaction envelope: %w", ErrInvalidEnvelope, err)
+	}
+
+	ops := env.Operations()
+	if len(ops) == 0 {
+		return nil, fmt.Errorf("%w: transaction envelope contains no operations; Soroban simulation requires a single InvokeHostFunction operation", ErrInvalidEnvelope)
+	}
+	if len(ops) > 1 {
+		return nil, fmt.Errorf("%w: transaction envelope contains %d operations; Soroban transactions allow only a single operation", ErrInvalidEnvelope, len(ops))
+	}
+
+	op := ops[0]
+	if op.Body.Type != xdr.OperationTypeInvokeHostFunction || op.Body.InvokeHostFunctionOp == nil {
+		return nil, fmt.Errorf("%w: non-Soroban operation %s cannot be simulated as a contract invocation (expected InvokeHostFunction)", ErrInvalidEnvelope, op.Body.Type)
+	}
+
+	ihf := op.Body.InvokeHostFunctionOp
+	if ihf.HostFunction.Type != xdr.HostFunctionTypeHostFunctionTypeInvokeContract || ihf.HostFunction.InvokeContract == nil {
+		return nil, fmt.Errorf("%w: unsupported Soroban host function %s (expected InvokeContract)", ErrInvalidEnvelope, ihf.HostFunction.Type)
+	}
+
+	inv := ihf.HostFunction.InvokeContract
+	contractID, err := inv.ContractAddress.String()
+	if err != nil || !strings.HasPrefix(contractID, "C") {
+		return nil, fmt.Errorf("%w: invalid target contract address in envelope", ErrInvalidEnvelope)
+	}
+	fnName := string(inv.FunctionName)
+	if fnName == "" {
+		return nil, fmt.Errorf("%w: invocation in envelope has an empty function name", ErrInvalidEnvelope)
+	}
+
+	return &ParsedInvocation{
+		Envelope:   trimmed,
+		ContractID: contractID,
+		Function:   fnName,
+		Args:       inv.Args,
+		Auth:       ihf.Auth,
+	}, nil
+}
 
 // InvocationParams describes the contract call to be simulated.
 type InvocationParams struct {

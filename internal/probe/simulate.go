@@ -20,6 +20,10 @@ type SimulateRequest struct {
 	Function string `json:"function"`
 	// Args are argument specifications in the scval package's "type:value" form.
 	Args []string `json:"args,omitempty"`
+	// Envelope, when set, is a prebuilt base64 XDR transaction envelope to
+	// simulate directly instead of building one from ContractID, Function
+	// and Args.
+	Envelope string `json:"envelope,omitempty"`
 	// Baseline, when set, is a saved simulation report whose cost this
 	// simulation is compared against. It must name the same contract and
 	// function; see ErrBaselineMismatch.
@@ -217,6 +221,9 @@ type SimulateResult struct {
 	ContractID string   `json:"contract_id"`
 	Function   string   `json:"function"`
 	Args       []string `json:"args,omitempty"`
+	// DecodedArgs are the decoded argument values when simulating a prebuilt
+	// transaction envelope.
+	DecodedArgs []any `json:"decoded_args,omitempty"`
 
 	// Signature is the function's declared signature, present when the
 	// arguments were typed from the contract's interface.
@@ -266,6 +273,7 @@ type SimulateResult struct {
 type AuthorizedInvocation struct {
 	ContractID     string                 `json:"contract_id,omitempty"`
 	Function       string                 `json:"function,omitempty"`
+	Signature      string                 `json:"signature,omitempty"`
 	Args           []any                  `json:"args,omitempty"`
 	SubInvocations []AuthorizedInvocation `json:"sub_invocations,omitempty"`
 }
@@ -297,41 +305,76 @@ func EstimateTotalFee(resourceFee, baseFee int64) int64 {
 // Success false and Error set. Go errors are reserved for problems reaching the
 // network or encoding the request.
 func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateResult, error) {
-	contract, err := stellar.ParseContractID(req.ContractID)
-	if err != nil {
-		return nil, err
-	}
-	if req.Function == "" {
-		return nil, fmt.Errorf("a function name is required")
-	}
-	// A baseline for a different call is rejected before anything is sent:
-	// its costs would describe a call that was never made.
-	if err := checkBaseline(req); err != nil {
-		return nil, err
-	}
+	var (
+		envelope    string
+		typed       typedArgs
+		decodedArgs []any
+		envAuth     []xdr.SorobanAuthorizationEntry
+	)
 
-	typed, err := p.typeArgs(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+	if req.Envelope != "" {
+		parsed, err := stellar.ParseInvocationEnvelope(req.Envelope)
+		if err != nil {
+			return nil, err
+		}
+		req.ContractID = parsed.ContractID
+		req.Function = parsed.Function
+		envelope = parsed.Envelope
+		envAuth = parsed.Auth
 
-	args, err := p.codec.EncodeAll(typed.args)
-	if err != nil {
-		return nil, err
+		if err := checkBaseline(req); err != nil {
+			return nil, err
+		}
+
+		for _, rawArg := range parsed.Args {
+			val, err := p.codec.Decode(rawArg)
+			if err != nil {
+				return nil, fmt.Errorf("decode envelope argument: %w", err)
+			}
+			decodedArgs = append(decodedArgs, val)
+		}
+
+		typed = p.lookupEnvelopeInterface(ctx, parsed.ContractID, parsed.Function, decodedArgs)
+		if len(typed.args) > 0 {
+			req.Args = typed.args
+		}
+	} else {
+		contract, err := stellar.ParseContractID(req.ContractID)
+		if err != nil {
+			return nil, err
+		}
+		if req.Function == "" {
+			return nil, fmt.Errorf("a function name is required")
+		}
+		// A baseline for a different call is rejected before anything is sent:
+		// its costs would describe a call that was never made.
+		if err := checkBaseline(req); err != nil {
+			return nil, err
+		}
+
+		typed, err = p.typeArgs(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		args, err := p.codec.EncodeAll(typed.args)
+		if err != nil {
+			return nil, err
+		}
+
+		envelope, err = stellar.BuildInvocationTx(stellar.InvocationParams{
+			SourceAccount: p.source,
+			Contract:      contract,
+			Function:      req.Function,
+			Args:          args,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if req.Repeat < 1 {
 		req.Repeat = 1
-	}
-
-	envelope, err := stellar.BuildInvocationTx(stellar.InvocationParams{
-		SourceAccount: p.source,
-		Contract:      contract,
-		Function:      req.Function,
-		Args:          args,
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	costs := make([]Cost, 0, req.Repeat)
@@ -345,7 +388,7 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 			return nil, err
 		}
 
-		built, err := p.buildSimulateResult(req, resp)
+		built, err := p.buildSimulateResult(ctx, req, resp)
 		if err != nil {
 			return nil, err
 		}
@@ -357,6 +400,12 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		footprints = append(footprints, built.Footprint)
 	}
 
+	if len(decodedArgs) > 0 {
+		result.DecodedArgs = decodedArgs
+	}
+	if len(result.Auth) == 0 && len(envAuth) > 0 {
+		result.Auth = p.decodeXDRAuthEntries(ctx, envAuth)
+	}
 	result.Signature = typed.signature
 	result.ABINote = typed.note
 	if typed.changed {
@@ -475,7 +524,41 @@ func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, 
 	return out, nil
 }
 
-func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.SimulateTransactionResponse) (*SimulateResult, error) {
+// lookupEnvelopeInterface resolves the target contract's interface for a
+// prebuilt envelope when an ABI source is configured, attaching the function's
+// signature and named parameter annotations.
+func (p *Prober) lookupEnvelopeInterface(ctx context.Context, contractID, function string, decodedArgs []any) typedArgs {
+	var out typedArgs
+	if p.abi == nil {
+		return out
+	}
+	iface, err := p.abi.Interface(ctx, p.network, contractID)
+	if err != nil {
+		if errors.Is(err, abi.ErrUnknownContract) {
+			out.note = "contract not found in the interface registry"
+		} else if errors.Is(err, abi.ErrNoWasm) {
+			out.note = "stellar asset contract has no WASM interface"
+		} else {
+			out.note = "interface registry unavailable: " + err.Error()
+		}
+		return out
+	}
+	fn, err := iface.Lookup(function)
+	if err != nil {
+		out.note = err.Error()
+		return out
+	}
+	out.signature = fn.Signature()
+	if len(fn.Inputs) == len(decodedArgs) && len(decodedArgs) > 0 {
+		out.args = make([]string, len(decodedArgs))
+		for i, param := range fn.Inputs {
+			out.args[i] = fmt.Sprintf("%s (%s) = %v", param.Name, param.Type.Display, decodedArgs[i])
+		}
+	}
+	return out
+}
+
+func (p *Prober) buildSimulateResult(ctx context.Context, req SimulateRequest, resp protocol.SimulateTransactionResponse) (*SimulateResult, error) {
 	result := &SimulateResult{
 		ContractID:   req.ContractID,
 		Function:     req.Function,
@@ -528,7 +611,7 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 	}
 
 	if len(resp.Results) > 0 && resp.Results[0].AuthXDR != nil && len(*resp.Results[0].AuthXDR) > 0 {
-		result.Auth = p.decodeAuthEntries(*resp.Results[0].AuthXDR)
+		result.Auth = p.decodeAuthEntries(ctx, *resp.Results[0].AuthXDR)
 	}
 
 	result.Cost.EstimatedTotalFee = EstimateTotalFee(result.Cost.ResourceFee, p.baseFee)
@@ -545,7 +628,7 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 	return result, nil
 }
 
-func (p *Prober) decodeAuthEntries(raw []string) []AuthEntry {
+func (p *Prober) decodeAuthEntries(ctx context.Context, raw []string) []AuthEntry {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -556,49 +639,62 @@ func (p *Prober) decodeAuthEntries(raw []string) []AuthEntry {
 			out = append(out, AuthEntry{RawXDR: b64})
 			continue
 		}
-
-		ae := AuthEntry{}
-		switch entry.Credentials.Type {
-		case xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount:
-			ae.Address = p.source
-			ae.IsSourceAccount = true
-		case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
-			if entry.Credentials.Address != nil {
-				if s, err := entry.Credentials.Address.Address.String(); err == nil {
-					ae.Address = s
-				}
-			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
-		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
-			if entry.Credentials.AddressV2 != nil {
-				if s, err := entry.Credentials.AddressV2.Address.String(); err == nil {
-					ae.Address = s
-				}
-			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
-		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressWithDelegates:
-			if entry.Credentials.AddressWithDelegates != nil {
-				if s, err := entry.Credentials.AddressWithDelegates.AddressCredentials.Address.String(); err == nil {
-					ae.Address = s
-				}
-			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
-		default:
-			ae.IsSourceAccount = false
-		}
-
-		inv, err := p.decodeAuthorizedInvocation(entry.RootInvocation)
-		if err != nil {
-			out = append(out, AuthEntry{RawXDR: b64})
-			continue
-		}
-		ae.RootInvocation = &inv
-		out = append(out, ae)
+		out = append(out, p.decodeAuthEntryStruct(ctx, entry, b64))
 	}
 	return out
 }
 
-func (p *Prober) decodeAuthorizedInvocation(inv xdr.SorobanAuthorizedInvocation) (AuthorizedInvocation, error) {
+func (p *Prober) decodeXDRAuthEntries(ctx context.Context, entries []xdr.SorobanAuthorizationEntry) []AuthEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]AuthEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, p.decodeAuthEntryStruct(ctx, entry, ""))
+	}
+	return out
+}
+
+func (p *Prober) decodeAuthEntryStruct(ctx context.Context, entry xdr.SorobanAuthorizationEntry, fallbackB64 string) AuthEntry {
+	ae := AuthEntry{}
+	switch entry.Credentials.Type {
+	case xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount:
+		ae.Address = p.source
+		ae.IsSourceAccount = true
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
+		if entry.Credentials.Address != nil {
+			if s, err := entry.Credentials.Address.Address.String(); err == nil {
+				ae.Address = s
+			}
+		}
+		ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
+		if entry.Credentials.AddressV2 != nil {
+			if s, err := entry.Credentials.AddressV2.Address.String(); err == nil {
+				ae.Address = s
+			}
+		}
+		ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddressWithDelegates:
+		if entry.Credentials.AddressWithDelegates != nil {
+			if s, err := entry.Credentials.AddressWithDelegates.AddressCredentials.Address.String(); err == nil {
+				ae.Address = s
+			}
+		}
+		ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+	default:
+		ae.IsSourceAccount = false
+	}
+
+	inv, err := p.decodeAuthorizedInvocation(ctx, entry.RootInvocation)
+	if err != nil {
+		return AuthEntry{RawXDR: fallbackB64}
+	}
+	ae.RootInvocation = &inv
+	return ae
+}
+
+func (p *Prober) decodeAuthorizedInvocation(ctx context.Context, inv xdr.SorobanAuthorizedInvocation) (AuthorizedInvocation, error) {
 	out := AuthorizedInvocation{}
 	switch inv.Function.Type {
 	case xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn:
@@ -608,6 +704,13 @@ func (p *Prober) decodeAuthorizedInvocation(inv xdr.SorobanAuthorizedInvocation)
 				out.ContractID = s
 			}
 			out.Function = string(fn.FunctionName)
+			if p.abi != nil && out.ContractID != "" && out.Function != "" {
+				if iface, err := p.abi.Interface(ctx, p.network, out.ContractID); err == nil {
+					if f, err := iface.Lookup(out.Function); err == nil {
+						out.Signature = f.Signature()
+					}
+				}
+			}
 			for _, arg := range fn.Args {
 				decoded, err := p.codec.Decode(arg)
 				if err != nil {
@@ -625,7 +728,7 @@ func (p *Prober) decodeAuthorizedInvocation(inv xdr.SorobanAuthorizedInvocation)
 	}
 
 	for _, sub := range inv.SubInvocations {
-		subInv, err := p.decodeAuthorizedInvocation(sub)
+		subInv, err := p.decodeAuthorizedInvocation(ctx, sub)
 		if err != nil {
 			return out, err
 		}
