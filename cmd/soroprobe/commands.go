@@ -58,6 +58,7 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
+	var decimals int
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -139,6 +140,14 @@ estimate cannot make a cost check pass by luck.
 			}
 			defer cleanup()
 
+			var decimalsPtr *int
+			if cmd.Flags().Changed("decimals") {
+				if decimals < 0 {
+					return fmt.Errorf("--decimals must be non-negative")
+				}
+				decimalsPtr = &decimals
+			}
+
 			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
 				ContractID:         args[0],
 				Function:           args[1],
@@ -147,6 +156,7 @@ estimate cannot make a cost check pass by luck.
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
+				Decimals:           decimalsPtr,
 			})
 			if err != nil {
 				return err
@@ -188,6 +198,7 @@ estimate cannot make a cost check pass by luck.
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
+	cmd.Flags().IntVar(&decimals, "decimals", 0, "format integer return values as a token amount with this decimal count")
 	return cmd
 }
 

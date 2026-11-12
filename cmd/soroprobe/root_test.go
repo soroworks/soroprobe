@@ -397,7 +397,28 @@ func TestSimulateJSONOutputEndToEnd(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &result))
 	assert.True(t, result.Success)
 	assert.EqualValues(t, 7, result.ReturnValue)
+	assert.Nil(t, result.ReturnValueFormatted, "return_value_formatted must only be present when --decimals is given")
 	assert.Positive(t, result.Cost.Instructions)
+}
+
+func TestSimulateDecimalsFormatting(t *testing.T) {
+	fake := stellartest.NewFake(t)
+
+	// In text mode: shows raw value and formatted value in parentheses
+	out, err := runWithFake(t, fake, "simulate", stellartest.SACContract, "decimals", "--decimals", "7")
+	require.NoError(t, err)
+	assert.Contains(t, out, "7 (0.0000007)")
+
+	// In json mode: adds return_value_formatted field
+	jsonOut, err := runWithFake(t, fake, "--json", "simulate", stellartest.SACContract, "decimals", "--decimals", "7")
+	require.NoError(t, err)
+
+	var result probe.SimulateResult
+	require.NoError(t, json.Unmarshal([]byte(jsonOut), &result))
+	assert.True(t, result.Success)
+	assert.EqualValues(t, 7, result.ReturnValue)
+	require.NotNil(t, result.ReturnValueFormatted)
+	assert.Equal(t, "0.0000007", *result.ReturnValueFormatted)
 }
 
 func TestSimulateReportsARejectedCallWithoutFailing(t *testing.T) {
