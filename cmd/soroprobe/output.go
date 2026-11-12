@@ -387,6 +387,22 @@ func renderCheck(w io.Writer, r *probe.CheckResult) error {
 	if r.CloseTimeNote != "" {
 		bw.printf("%s\n", s.dim("note: "+r.CloseTimeNote))
 	}
+	if r.Upgradeability != nil {
+		bw.printf("\n%s\n", s.bold("upgradeability"))
+		if r.Upgradeability.Upgradeable {
+			var fns []string
+			for _, fn := range r.Upgradeability.UpgradeFunctions {
+				fns = append(fns, fn.Name)
+			}
+			bw.printf("  %s (%s)\n", s.dim("upgradeable via:"), strings.Join(fns, ", "))
+			bw.printf("  %s %s\n", s.dim("authority:"), r.Upgradeability.AdminRequired)
+		} else {
+			bw.printf("  %s\n", s.dim("immutable (no upgrade entrypoints detected)"))
+		}
+		if r.Upgradeability.LastModifiedLedger > 0 {
+			bw.printf("  %s ledger %d (%d ledgers ago)\n", s.dim("code modified:"), r.Upgradeability.LastModifiedLedger, r.Upgradeability.LedgersSinceUpgrade)
+		}
+	}
 	return bw.err
 }
 
