@@ -70,6 +70,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.String("log-level", "", fmt.Sprintf("debug, info, warn or error (env %s) (default %q)", config.EnvLogLevel, config.DefaultLogLevel))
 	flags.String("log-format", "", fmt.Sprintf("text or json (env %s) (default %q)", config.EnvLogFormat, config.DefaultLogFormat))
 	flags.Duration("timeout", 0, fmt.Sprintf("per-request RPC timeout (env %s)", config.EnvTimeout))
+	flags.Int("retries", config.DefaultMaxRetries, fmt.Sprintf("number of retries for transient RPC errors (env %s)", config.EnvRPCRetries))
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
 	flags.Uint32("instance-warn-ledgers", 0, "warning threshold for instance entries")
@@ -119,6 +120,9 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	}
 	if flags.Changed("timeout") {
 		cfg.Timeout, _ = flags.GetDuration("timeout")
+	}
+	if flags.Changed("retries") {
+		cfg.Retries, _ = flags.GetInt("retries")
 	}
 	if flags.Changed("warn-ledgers") {
 		cfg.WarnLedgers, _ = flags.GetUint32("warn-ledgers")
@@ -204,6 +208,7 @@ func newLiveProber(cfg config.Config, abiFromChain bool) (*probe.Prober, func(),
 		URL:     cfg.RPCURL,
 		Timeout: cfg.Timeout,
 		Logger:  log,
+		Retries: cfg.Retries,
 	})
 	if err != nil {
 		return nil, nil, err
