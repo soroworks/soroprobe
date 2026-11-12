@@ -292,6 +292,7 @@ func applyValues(cfg *Config, path string, fc *fileConfig) error {
 	setString(&cfg.LogLevel, fc.LogLevel)
 	setString(&cfg.LogFormat, fc.LogFormat)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
+	setString(&cfg.ABIFile, fc.ABIFile)
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
 	}
@@ -566,6 +567,9 @@ func (c Config) Validate() error {
 	if c.SoroVaultURL != "" &&
 		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
 		return fmt.Errorf("sorovault url %q must start with http:// or https://", c.SoroVaultURL)
+	}
+	if c.SoroVaultURL != "" && c.ABIFile != "" {
+		return errors.New("giving both --abi-file and --sorovault-url is an error")
 	}
 	return nil
 }

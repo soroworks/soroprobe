@@ -611,6 +611,13 @@ in JSON), rather than failing a probe that would otherwise work. The network
 is matched by passphrase, so a mainnet probe never picks up a testnet
 interface.
 
+For contracts under development or in air-gapped CI environments, you can provide
+the contract's interface JSON from a local file using `--abi-file <path>` (or
+`ABI_FILE` in the environment). The file format is the `interface` object of
+SoroVault's ABI JSON, so saving output from `sorovault get <id> --json > abi.json`
+produces a valid file. Giving both `--abi-file` and `--sorovault-url` together
+is an error.
+
 Collections are typed element by element: for a `Vec<u32>` parameter, `[1, 2]`
 becomes `vec:["u32:1","u32:2"]`, and a `Map<Symbol, u32>` given as
 `[["a", 10]]` gets typed keys and values, recursively. Tuples and

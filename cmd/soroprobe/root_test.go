@@ -674,3 +674,12 @@ func TestCheckFileRunsEndToEndAgainstTheFake(t *testing.T) {
 		assert.Contains(t, err.Error(), "read check file")
 	})
 }
+
+func TestABIFileMutualExclusionWithSoroVault(t *testing.T) {
+	fake := stellartest.NewFake(t)
+
+	_, err := runWithFake(t, fake, "simulate", stellartest.SACContract, "decimals",
+		"--abi-file", "some_file.json", "--sorovault-url", "http://localhost:8080")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "giving both --abi-file and --sorovault-url is an error")
+}

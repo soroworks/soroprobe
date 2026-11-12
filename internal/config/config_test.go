@@ -368,7 +368,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 	t.Setenv(config.EnvTimeout, "90s")
 	t.Setenv(config.EnvWarnLedgers, "500")
 	t.Setenv(config.EnvCriticalLedgers, "50")
-	t.Setenv(config.EnvSoroVaultURL, "https://vault.example.com")
+	t.Setenv(config.EnvABIFile, "/path/to/abi.json")
 	t.Chdir(t.TempDir())
 
 	cfg, err := config.Load("")
@@ -383,7 +383,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 	assert.Equal(t, 90*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 500, cfg.WarnLedgers)
 	assert.EqualValues(t, 50, cfg.CriticalLedgers)
-	assert.Equal(t, "https://vault.example.com", cfg.SoroVaultURL)
+	assert.Equal(t, "/path/to/abi.json", cfg.ABIFile)
 	require.NoError(t, cfg.Validate())
 }
 
@@ -463,6 +463,10 @@ func TestValidate(t *testing.T) {
 			"use at least",
 		},
 		{"sorovault url without scheme", func(c *config.Config) { c.SoroVaultURL = "localhost:8080" }, "sorovault url"},
+		{"both sorovault and abi-file", func(c *config.Config) {
+			c.SoroVaultURL = "http://localhost:8080"
+			c.ABIFile = "abi.json"
+		}, "giving both --abi-file and --sorovault-url is an error"},
 	}
 
 	for _, tt := range tests {
