@@ -79,3 +79,20 @@ func DecodeEntryData(b64 string) (xdr.LedgerEntryData, error) {
 	}
 	return data, nil
 }
+
+// ParseAccountID converts a strkey account address ("G...") into an AccountId.
+func ParseAccountID(address string) (xdr.AccountId, error) {
+	var id xdr.AccountId
+	if err := id.SetAddress(address); err != nil {
+		return xdr.AccountId{}, fmt.Errorf("invalid account id %q: %w", address, err)
+	}
+	return id, nil
+}
+
+// AccountKey returns the LedgerKey for an account entry.
+func AccountKey(accountID xdr.AccountId) xdr.LedgerKey {
+	return xdr.LedgerKey{
+		Type:    xdr.LedgerEntryTypeAccount,
+		Account: &xdr.LedgerKeyAccount{AccountId: accountID},
+	}
+}
