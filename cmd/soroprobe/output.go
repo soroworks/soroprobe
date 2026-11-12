@@ -321,6 +321,25 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 		renderEntry(bw, s, "data "+d.Key, d)
 	}
 
+	if r.SACDetails != nil {
+		bw.printf("\n%s\n", s.bold("stellar asset details"))
+		bw.printf("  asset:       %s\n", r.SACDetails.AssetCode)
+		if r.SACDetails.IsNative {
+			bw.printf("  type:        native (XLM)\n")
+		} else {
+			bw.printf("  type:        issued asset\n")
+			bw.printf("  issuer:      %s\n", r.SACDetails.Issuer)
+		}
+		if r.SACDetails.Admin != "" {
+			bw.printf("  admin:       %s\n", r.SACDetails.Admin)
+		}
+		bw.printf("  flags:       AUTH_REQUIRED=%v, AUTH_REVOCABLE=%v, CLAWBACK=%v\n",
+			r.SACDetails.AuthRequired, r.SACDetails.AuthRevocable, r.SACDetails.AuthClawback)
+		if r.SACDetails.CodeTTLExplanation != "" {
+			bw.printf("  code ttl:    %s\n", s.dim(r.SACDetails.CodeTTLExplanation))
+		}
+	}
+
 	if r.InstanceStorage != nil {
 		encoded, err := json.MarshalIndent(r.InstanceStorage, "  ", "  ")
 		if err != nil {

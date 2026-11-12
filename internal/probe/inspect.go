@@ -69,12 +69,26 @@ type EntryReport struct {
 }
 
 // InspectResult reports a contract's on-ledger state health.
+// SACDetails describes classic asset parameters and issuer flags for a Stellar Asset Contract.
+type SACDetails struct {
+	IsNative           bool   `json:"is_native"`
+	AssetCode          string `json:"asset_code"`
+	Issuer             string `json:"issuer,omitempty"`
+	Admin              string `json:"admin,omitempty"`
+	AuthRequired       bool   `json:"auth_required"`
+	AuthRevocable      bool   `json:"auth_revocable"`
+	AuthClawback       bool   `json:"auth_clawback"`
+	CodeTTLExplanation string `json:"code_ttl_explanation"`
+}
+
 type InspectResult struct {
 	ContractID string `json:"contract_id"`
 	// Deployed is true when the contract's instance entry exists.
 	Deployed bool `json:"deployed"`
 	// Executable is "wasm" or "stellar_asset".
 	Executable string `json:"executable,omitempty"`
+	// SACDetails holds classic asset parameters when Executable is "stellar_asset".
+	SACDetails *SACDetails `json:"sac_details,omitempty"`
 	// WasmHash is the hex code hash, for Wasm contracts.
 	WasmHash string `json:"wasm_hash,omitempty"`
 
@@ -352,6 +366,7 @@ func (p *Prober) readInstanceEntry(entry protocol.LedgerEntryResult, result *Ins
 		// Stellar Asset Contracts are implemented by the host itself, so there
 		// is no Wasm code entry to look up or to expire.
 		result.Executable = "stellar_asset"
+		result.SACDetails = p.extractSACDetails(ctx, instance.Storage)
 	default:
 		result.Executable = instance.Executable.Type.String()
 	}
@@ -483,3 +498,106 @@ func (r *InspectResult) worstStatus() health.Status {
 
 // ensure the codec interface is what inspect relies on
 var _ scval.Codec = (*scval.Registry)(nil)
+
+
+func (p *Prober) extractSACDetails(ctx context.Context, storage *xdr.ScMap) *SACDetails {
+	details := &SACDetails{
+		CodeTTLExplanation: "stellar asset contracts are built into the host environment and have no code TTL entry",
+	}
+
+	if storage == nil {
+		details.IsNative = true
+		details.AssetCode = "native (XLM)"
+		return details
+	}
+
+	// Inspect instance storage map for AssetInfo and METADATA
+	isNative := true
+	assetCode := "native"
+	issuerAddr := ""
+	adminAddr := ""
+
+	for _, entry := range *storage {
+		keyStr := scValDisplay(entry.Key)
+		valStr := scValDisplay(entry.Val)
+
+		if strings.Contains(keyStr, "AssetInfo") {
+			if strings.Contains(valStr, "AlphaNum") || strings.Contains(valStr, "G") {
+				isNative = false
+				// Extract issuer if address is found
+				parts := strings.FieldsFunc(valStr, func(r rune) bool {
+					return r == ' ' || r == '"' || r == ':' || r == ',' || r == '[' || r == ']' || r == '(' || r == ')'
+				})
+				for _, part := range parts {
+					if strings.HasPrefix(part, "G") && len(part) == 56 {
+						issuerAddr = part
+					} else if len(part) >= 3 && len(part) <= 12 && part != "AlphaNum4" && part != "AlphaNum12" && part != "sym" {
+						assetCode = part
+					}
+				}
+			}
+		}
+
+		if strings.Contains(keyStr, "METADATA") || strings.Contains(keyStr, "Metadata") {
+			if strings.Contains(valStr, "symbol") {
+				parts := strings.FieldsFunc(valStr, func(r rune) bool {
+					return r == ' ' || r == '"' || r == ':' || r == ',' || r == '[' || r == ']'
+				})
+				for i, p := range parts {
+					if p == "symbol" && i+1 < len(parts) {
+						assetCode = parts[i+1]
+					}
+				}
+			}
+		}
+
+		if strings.Contains(keyStr, "Admin") || strings.Contains(keyStr, "admin") {
+			parts := strings.FieldsFunc(valStr, func(r rune) bool {
+				return r == ' ' || r == '"' || r == ':' || r == ',' || r == '[' || r == ']'
+			})
+			for _, part := range parts {
+				if (strings.HasPrefix(part, "G") || strings.HasPrefix(part, "C")) && len(part) == 56 {
+					adminAddr = part
+				}
+			}
+		}
+	}
+
+	details.IsNative = isNative
+	details.AssetCode = assetCode
+	details.Issuer = issuerAddr
+	details.Admin = adminAddr
+
+	if isNative {
+		details.AssetCode = "native (XLM)"
+		return details
+	}
+
+	// Query issuer account flags if issuer is known
+	if issuerAddr != "" {
+		if accID, err := stellar.ParseAccountID(issuerAddr); err == nil {
+			key := stellar.AccountKey(accID)
+			if b64Key, err := stellar.EncodeKey(key); err == nil {
+				resp, err := p.client.GetLedgerEntries(ctx, protocol.GetLedgerEntriesRequest{Keys: []string{b64Key}})
+				if err == nil && len(resp.Entries) > 0 {
+					if data, err := stellar.DecodeEntryData(resp.Entries[0].DataXDR); err == nil {
+						acc := data.MustAccount()
+						details.AuthRequired = (acc.Flags & 0x1) != 0
+						details.AuthRevocable = (acc.Flags & 0x2) != 0
+						details.AuthClawback = (acc.Flags & 0x8) != 0
+					}
+				}
+			}
+		}
+	}
+
+	return details
+}
+
+func scValDisplay(v xdr.ScVal) string {
+	b, err := v.MarshalBinary()
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}

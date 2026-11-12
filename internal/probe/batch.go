@@ -220,7 +220,7 @@ func (p *Prober) checkBatchPrefetched(ctx context.Context, req BatchRequest) (*B
 			continue
 		}
 		partial := &InspectResult{}
-		wasmHash, err := p.readInstanceEntry(instance, partial)
+		wasmHash, err := p.readInstanceEntry(ctx, instance, partial)
 		if err != nil {
 			state.err = err
 			continue
