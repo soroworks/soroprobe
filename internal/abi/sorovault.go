@@ -24,6 +24,7 @@ type SoroVault struct {
 }
 
 var _ Source = (*SoroVault)(nil)
+var _ WasmVerifier = (*SoroVault)(nil)
 
 // NewSoroVault returns a Source backed by the SoroVault instance at baseURL,
 // for example "http://localhost:8080". A nil client gets one with timeout as
@@ -114,4 +115,72 @@ func errorMessage(body []byte, status string) string {
 		return e.Error
 	}
 	return status
+}
+
+// ContractMetadata carries SoroVault's catalogued record for a contract.
+type ContractMetadata struct {
+	ContractID string     `json:"contract_id"`
+	WasmHash   string     `json:"wasm_hash"`
+	Interface  *Interface `json:"interface"`
+}
+
+// Metadata fetches the full contract record from SoroVault, including the catalogued
+// WASM hash and the interface.
+func (s *SoroVault) Metadata(ctx context.Context, network, contractID string) (*ContractMetadata, error) {
+	endpoint := s.baseURL + "/api/contracts/" + url.PathEscape(contractID)
+	if network != "" {
+		endpoint += "?network=" + url.QueryEscape(network)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sorovault: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // the body has been read; a close error is not actionable here.
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("sorovault: reading response: %w", err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, fmt.Errorf("%w: %s on %s", ErrUnknownContract, contractID, network)
+	case http.StatusUnprocessableEntity:
+		return nil, fmt.Errorf("%w: %s", ErrUnknownContract, errorMessage(body, resp.Status))
+	default:
+		return nil, fmt.Errorf("sorovault: %s", errorMessage(body, resp.Status))
+	}
+
+	var payload struct {
+		WasmHash  string     `json:"wasm_hash"`
+		Interface *Interface `json:"interface"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("sorovault: decoding response: %w", err)
+	}
+	return &ContractMetadata{
+		ContractID: contractID,
+		WasmHash:   payload.WasmHash,
+		Interface:  payload.Interface,
+	}, nil
+}
+
+// RegisteredWasmHash returns the catalogued WASM hash for contractID on network.
+func (s *SoroVault) RegisteredWasmHash(ctx context.Context, network, contractID string) (string, error) {
+	meta, err := s.Metadata(ctx, network, contractID)
+	if err != nil {
+		return "", err
+	}
+	if meta.WasmHash == "" {
+		return "", errors.New("sorovault: response carried no wasm_hash")
+	}
+	return meta.WasmHash, nil
 }

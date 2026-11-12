@@ -27,10 +27,23 @@ type Prober struct {
 	log                *slog.Logger
 	ledgerTime         *ledgerTimeCache
 
-	abi          abi.Source
-	network      string
-	baseFee      int64
-	inspectCache *inspectCache
+	abi                  abi.Source
+	network              string
+	baseFee              int64
+	inspectCache         *inspectCache
+	disableTypedDecoding bool
+	lastWasmCheck        *Check
+}
+
+// SetDisableTypedDecoding enables or disables typed argument decoding from
+// the configured ABI source.
+func (p *Prober) SetDisableTypedDecoding(disable bool) {
+	p.disableTypedDecoding = disable
+}
+
+// TypedDecodingDisabled reports whether typed argument decoding is currently disabled.
+func (p *Prober) TypedDecodingDisabled() bool {
+	return p.disableTypedDecoding
 }
 
 // Options configures a Prober.

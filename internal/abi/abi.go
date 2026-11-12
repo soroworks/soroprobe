@@ -113,6 +113,14 @@ type Source interface {
 	Interface(ctx context.Context, network, contractID string) (*Interface, error)
 }
 
+// WasmVerifier is an optional interface implemented by interface sources (such
+// as SoroVault) that catalog which WASM hash was built for a contract.
+type WasmVerifier interface {
+	// RegisteredWasmHash returns the catalogued WASM hash for contractID on network.
+	// Returns ErrUnknownContract if the contract is not found in the registry.
+	RegisteredWasmHash(ctx context.Context, network, contractID string) (string, error)
+}
+
 // prefixes maps a scalar interface kind onto the scval argument prefix that
 // encodes it. Vec and map are typed element by element instead (see
 // annotator); tuples and user-defined types have no literal form, so their

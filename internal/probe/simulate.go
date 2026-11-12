@@ -428,7 +428,10 @@ type typedArgs struct {
 // helpfully.
 func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, error) {
 	out := typedArgs{args: req.Args}
-	if p.abi == nil {
+	if p.abi == nil || p.disableTypedDecoding {
+		if p.disableTypedDecoding {
+			out.note = "typed decoding disabled due to SoroVault WASM hash mismatch"
+		}
 		return out, nil
 	}
 	typer, ok := p.codec.(interface{ HasType(string) bool })
