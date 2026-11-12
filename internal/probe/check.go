@@ -34,6 +34,8 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// AdminFn, when set, names the function used to resolve the contract admin for security posture checking.
+	AdminFn string `json:"admin_fn,omitempty" yaml:"admin_fn,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -70,6 +72,8 @@ type CheckResult struct {
 	Inspect *InspectResult `json:"inspect,omitempty"`
 	// Simulate is the invocation result, when a function was given.
 	Simulate *SimulateResult `json:"simulate,omitempty"`
+	// AdminPosture reports the trust model and signer architecture of the contract admin.
+	AdminPosture *AdminPosture `json:"admin_posture,omitempty"`
 	// LatestLedger is the ledger the assessment was made against.
 	LatestLedger uint32 `json:"latest_ledger"`
 	// CloseTimeNote explains the measured duration estimate or its fallback.
@@ -110,6 +114,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&dataTTLStep{},
 		&simulateStep{},
 		&expectStep{p: p},
+		&adminPostureStep{p: p},
 	}
 }
 
@@ -166,6 +171,12 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 		Simulate:      sim,
 		LatestLedger:  inspect.LatestLedger,
 		CloseTimeNote: inspect.CloseTimeNote,
+	}
+
+	if req.AdminFn != "" {
+		if posture, err := p.EvaluateAdminPosture(ctx, req.ContractID, req.AdminFn); err == nil {
+			result.AdminPosture = posture
+		}
 	}
 
 	for _, step := range p.checkSteps() {
@@ -399,4 +410,39 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+
+// adminPostureStep reports the contract admin's security posture and key architecture.
+type adminPostureStep struct{ p *Prober }
+
+func (s *adminPostureStep) Name() string { return "admin_posture" }
+
+func (s *adminPostureStep) Run(ctx context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if req.AdminFn == "" {
+		return nil, nil
+	}
+
+	posture, err := s.p.EvaluateAdminPosture(ctx, req.ContractID, req.AdminFn)
+	if err != nil {
+		return []Check{{
+			Name:    "admin_posture",
+			Outcome: OutcomeWarn,
+			Detail:  fmt.Sprintf("could not evaluate admin posture via %s: %v", req.AdminFn, err),
+		}}, nil
+	}
+
+	if posture.SingleKeyRisk {
+		return []Check{{
+			Name:    "admin_posture",
+			Outcome: OutcomeWarn,
+			Detail:  posture.Summary,
+		}}, nil
+	}
+
+	return []Check{{
+		Name:    "admin_posture",
+		Outcome: OutcomePass,
+		Detail:  posture.Summary,
+	}}, nil
 }
