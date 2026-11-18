@@ -511,14 +511,45 @@ func TestInspectDataKeysWithRealFixtures(t *testing.T) {
 	})
 }
 
-func TestInspectRejectsBadContractID(t *testing.T) {
+func TestInspectRejectsInvalidRequestsBeforeRPC(t *testing.T) {
 	t.Parallel()
 
-	fake := stellartest.NewFake(t)
-	p := newProber(t, fake, health.DefaultThresholds)
+	cases := []struct {
+		name    string
+		request probe.InspectRequest
+		want    string
+	}{
+		{
+			name: "empty contract ID",
+			want: `invalid contract id ""`,
+		},
+		{
+			name:    "malformed contract ID",
+			request: probe.InspectRequest{ContractID: "nope"},
+			want:    `invalid contract id "nope"`,
+		},
+		{
+			name: "invalid numeric data key after a valid key",
+			request: probe.InspectRequest{
+				ContractID: stellartest.SACContract,
+				DataKeys:   []string{"sym:Balance", "u32:not-a-number"},
+			},
+			want: "u32:not-a-number",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	_, err := p.Inspect(context.Background(), probe.InspectRequest{ContractID: "nope"})
-	require.Error(t, err)
+			fake := stellartest.NewFake(t)
+			p := newProber(t, fake, health.DefaultThresholds)
+			result, err := p.Inspect(t.Context(), tc.request)
+
+			require.ErrorContains(t, err, tc.want)
+			assert.Nil(t, result)
+			assert.Empty(t, fake.EntryRequests, "invalid input must fail before any ledger read")
+		})
+	}
 }
 
 func TestInspectPropagatesTransportErrors(t *testing.T) {
