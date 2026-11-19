@@ -261,6 +261,19 @@ func (p *Prober) checkBatchPrefetched(ctx context.Context, req BatchRequest) (*B
 	for key, err := range code.errors {
 		keyErrors[key] = err
 	}
+	// The batched client only serves prefetched entries, so the network
+	// limits simulations are measured against are read here, once, into the
+	// cache every check shares, when any of them simulates. Failing to read them only loses the usage
+	// report, as it does for a single check.
+	for _, check := range req.Checks {
+		if check.Function == "" {
+			continue
+		}
+		if _, err := p.Limits(ctx); err != nil {
+			p.log.Debug("could not read network limits for the batch", "err", err)
+		}
+		break
+	}
 	client := &cachedLedgerClient{Client: p.client, entries: entries, latest: latest, errors: keyErrors}
 	batchedProber := *p
 	batchedProber.client = client

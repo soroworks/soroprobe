@@ -406,6 +406,14 @@
             "items": {
               "type": "string"
             }
+          },
+          "source": {
+            "type": "string",
+            "description": "Existing account (G...) to simulate as. Its sequence number is read from the ledger; a missing account is an error. Never a secret key."
+          },
+          "headroom_percent": {
+            "type": "number",
+            "description": "Share of a network limit a resource may use before the result warns. Defaults to 80."
           }
         },
         "required": ["contract_id", "function"]
@@ -442,6 +450,21 @@
           },
           "error": {
             "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageReport"
+          },
+          "fees": {
+            "$ref": "#/components/schemas/FeeRecommendation"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "return_value": {},
           "return_value_xdr": {
@@ -480,6 +503,52 @@
           "footprint",
           "latest_ledger"
         ]
+      },
+      "UsageReport": {
+        "type": "object",
+        "description": "Each simulated resource as a share of the network's per-transaction limit.",
+        "properties": {
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "used": { "type": "integer", "format": "int64" },
+                "limit": { "type": "integer", "format": "int64" },
+                "percent": { "type": "number" },
+                "over_headroom": { "type": "boolean" }
+              }
+            }
+          },
+          "headroom_percent": { "type": "number" },
+          "warning": { "type": "string" }
+        }
+      },
+      "FeeRecommendation": {
+        "type": "object",
+        "description": "Recommended inclusion fees from recent Soroban fee percentiles (getFeeStats).",
+        "properties": {
+          "resource_fee_stroops": { "type": "integer", "format": "int64" },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "level": { "type": "string", "enum": ["low", "median", "high"] },
+                "percentile": { "type": "integer" },
+                "inclusion_fee_stroops": { "type": "integer", "format": "int64" },
+                "total_fee_stroops": { "type": "integer", "format": "int64" },
+                "total_xlm": { "type": "string" }
+              }
+            }
+          },
+          "source": { "type": "string" },
+          "ledger_count": { "type": "integer" },
+          "transaction_count": { "type": "integer" },
+          "latest_ledger": { "type": "integer" },
+          "note": { "type": "string" }
+        }
       },
       "Cost": {
         "type": "object",

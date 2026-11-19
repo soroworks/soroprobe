@@ -79,3 +79,12 @@ func DecodeEntryData(b64 string) (xdr.LedgerEntryData, error) {
 	}
 	return data, nil
 }
+
+// SettingKey is the ledger key of a network configuration setting,
+// such as the per-transaction resource limits.
+func SettingKey(id xdr.ConfigSettingId) xdr.LedgerKey {
+	return xdr.LedgerKey{
+		Type:          xdr.LedgerEntryTypeConfigSetting,
+		ConfigSetting: &xdr.LedgerKeyConfigSetting{ConfigSettingId: id},
+	}
+}

@@ -38,6 +38,9 @@ type Client interface {
 	GetNetwork(ctx context.Context) (protocol.GetNetworkResponse, error)
 	// GetHealth reports RPC server health and its retention window.
 	GetHealth(ctx context.Context) (protocol.GetHealthResponse, error)
+	// GetFeeStats reports recent inclusion fee percentiles, for Soroban and
+	// classic transactions separately.
+	GetFeeStats(ctx context.Context) (protocol.GetFeeStatsResponse, error)
 }
 
 // RPCClient is the live Client, backed by the Stellar RPC JSON-RPC API.
@@ -157,6 +160,18 @@ func (c *RPCClient) GetNetwork(ctx context.Context) (protocol.GetNetworkResponse
 	resp, err := c.inner.GetNetwork(ctx)
 	if err != nil {
 		return resp, fmt.Errorf("getNetwork: %w", err)
+	}
+	return resp, nil
+}
+
+// GetFeeStats implements Client.
+func (c *RPCClient) GetFeeStats(ctx context.Context) (protocol.GetFeeStatsResponse, error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	resp, err := c.inner.GetFeeStats(ctx)
+	if err != nil {
+		return resp, fmt.Errorf("getFeeStats: %w", err)
 	}
 	return resp, nil
 }
