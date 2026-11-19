@@ -244,6 +244,18 @@ restoration; it does not perform one.
 
 ## CLI reference
 
+Every command prints its own arguments, flags and the [global flags](#global-flags)
+with `--help`. Reading help never contacts the network:
+
+```
+$ soroprobe inspect --help
+Read a contract's instance and code entries, and report how close each is to
+expiring.
+…
+Usage:
+  soroprobe inspect <contract-id> [flags]
+```
+
 ### `soroprobe simulate <contract-id> <function> [args...]` or `simulate --file <calls.json>`
 
 Builds an invocation, simulates it, and reports the outcome, decoded return
