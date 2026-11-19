@@ -45,6 +45,10 @@ const (
 	// ExtendFootprintTTL is the subject name of a transaction that extends
 	// the TTL of a ledger entry rather than invoking a contract function.
 	ExtendFootprintTTL = "extend_footprint_ttl"
+	// UploadContractWasm and CreateContract are the subject names of the
+	// two deployment transactions: uploading a Wasm and instantiating it.
+	UploadContractWasm = "upload_contract_wasm"
+	CreateContract     = "create_contract"
 	// PersistentDataKey is the SAC balance entry recorded in
 	// ledger_entries_data_durability.json, stored with persistent durability.
 	PersistentDataKey = `vec:["sym:Balance","addr:CBXZBQ6NW3TGPGLTR4JCG2VPVWFLCCHKDW75NJIXYXV7CJLNUO64VTFC"]`
@@ -109,6 +113,13 @@ type Fake struct {
 	LedgersErr            error
 	LedgerCloseInterval   time.Duration
 	LatestLedgerCloseTime int64
+
+	// Transactions maps a transaction hash to the getTransaction response
+	// to return. A hash absent from the map is reported as NOT_FOUND, as RPC
+	// reports a transaction outside its retention window.
+	Transactions map[string]protocol.GetTransactionResponse
+	// TransactionErr injects a getTransaction transport failure.
+	TransactionErr error
 
 	// HealthErr and NetworkErr inject getHealth and getNetwork failures.
 	HealthErr  error
@@ -265,6 +276,26 @@ func (f *Fake) GetNetwork(context.Context) (protocol.GetNetworkResponse, error) 
 	return protocol.GetNetworkResponse{Passphrase: passphrase}, nil
 }
 
+// GetTransaction implements stellar.Client.
+func (f *Fake) GetTransaction(_ context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error) {
+	if f.TransactionErr != nil {
+		return protocol.GetTransactionResponse{}, f.TransactionErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if resp, ok := f.Transactions[req.Hash]; ok {
+		return resp, nil
+	}
+	return protocol.GetTransactionResponse{
+		LatestLedger: f.LatestLedger,
+		OldestLedger: f.LatestLedger - 17280,
+		TransactionDetails: protocol.TransactionDetails{
+			Status:          protocol.TransactionStatusNotFound,
+			TransactionHash: req.Hash,
+		},
+	}, nil
+}
+
 // GetHealth implements stellar.Client.
 func (f *Fake) GetHealth(context.Context) (protocol.GetHealthResponse, error) {
 	f.mu.Lock()
@@ -308,8 +339,8 @@ func InstanceKeyOf(t testing.TB, contractID string) string {
 }
 
 // SubjectOf decodes a base64 transaction envelope and returns the name of
-// what it does: the contract function it invokes, or ExtendFootprintTTL for
-// an extension.
+// what it does: the contract function it invokes, ExtendFootprintTTL for
+// an extension, or UploadContractWasm or CreateContract for a deployment.
 func SubjectOf(envelope string) (string, error) {
 	var env xdr.TransactionEnvelope
 	if err := xdr.SafeUnmarshalBase64(envelope, &env); err != nil {
@@ -328,6 +359,12 @@ func SubjectOf(envelope string) (string, error) {
 	invoke, ok := ops[0].Body.GetInvokeHostFunctionOp()
 	if !ok {
 		return "", fmt.Errorf("operation is neither invokeHostFunction nor extendFootprintTtl")
+	}
+	switch invoke.HostFunction.Type {
+	case xdr.HostFunctionTypeHostFunctionTypeUploadContractWasm:
+		return UploadContractWasm, nil
+	case xdr.HostFunctionTypeHostFunctionTypeCreateContract, xdr.HostFunctionTypeHostFunctionTypeCreateContractV2:
+		return CreateContract, nil
 	}
 	args, ok := invoke.HostFunction.GetInvokeContract()
 	if !ok {

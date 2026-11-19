@@ -123,6 +123,7 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		bw.printf("%s\n", s.green("SUCCESS  the call would succeed"))
 	} else {
 		bw.printf("%s\n", s.red("FAILED   the call would fail"))
+		renderErrorExplanation(bw, s, r.ErrorExplanation)
 		bw.printf("%s\n", indent(r.Error, "  "))
 	}
 
@@ -565,4 +566,32 @@ func (b *bufWriter) printf(format string, args ...any) {
 		return
 	}
 	_, b.err = fmt.Fprintf(b.w, format, args...)
+}
+
+// renderErrorExplanation prints what a failing call's error means, ahead of
+// the raw message it was read from.
+func renderErrorExplanation(bw *bufWriter, s styler, e *probe.ErrorExplanation) {
+	if e == nil {
+		return
+	}
+	switch {
+	case e.Kind == probe.ErrorKindContract && e.Name != "":
+		bw.printf("  %s %s = %s::%s\n", s.bold("contract error"), e.Raw, e.Enum, e.Name)
+		if e.Doc != "" {
+			bw.printf("%s\n", indent(e.Doc, "    "))
+		}
+	case e.Kind == probe.ErrorKindContract && e.Code != nil:
+		bw.printf("  %s %s = code %d\n", s.bold("contract error"), e.Raw, *e.Code)
+	case e.Kind == probe.ErrorKindHost:
+		bw.printf("  %s %s\n", s.bold("host error"), e.Raw)
+		if e.Description != "" {
+			bw.printf("    %s\n", e.Description)
+		}
+	default:
+		bw.printf("  %s %s\n", s.bold("error"), e.Raw)
+	}
+	if e.Note != "" {
+		bw.printf("    %s\n", s.dim("note: "+e.Note))
+	}
+	bw.printf("\n")
 }

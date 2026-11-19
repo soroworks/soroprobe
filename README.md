@@ -658,6 +658,60 @@ only verify sources and images you trust. Values starting with `-` are rejected
 for `--source`, `--rev` and `--image`, and metadata read from the contract is
 held to the same rule.
 
+### Failure explanations
+
+When a call fails, `simulate` explains the error before the raw message.
+
+- A contract error such as `Error(Contract, #3)` is looked up in the error enums of the interface stored on chain and shown with its case name and doc comment, for example `TokenError::InsufficientBalance`.
+- A code the enum does not declare, or a contract whose interface cannot be read, keeps its number with a note saying why.
+- A host error such as `Error(Storage, MissingValue)` is described by its error type and code.
+
+`--json` carries the same fields under `error_explanation`.
+
+### `soroprobe calibrate <tx-hash>`
+
+Fetches a submitted transaction, simulates its invocation again and compares each resource: CPU instructions, disk read bytes, write bytes and the resource fee. Each row shows the estimate, the actual figure and the difference, both absolute and as a percentage.
+
+Actual figures come from the transaction's `core_metrics` diagnostic events and the fee it was charged. Without diagnostic events, the limits it declared stand in, and each row says which source it used.
+
+When a ledger entry the transaction touched has changed since it ran, the report says the comparison is approximate. A transaction outside the RPC's retention window gives a clear error.
+
+```
+soroprobe calibrate 3a1f…
+```
+
+### `soroprobe decode [type] <base64>` and `soroprobe encode scval <value>`
+
+`decode` turns a base64 XDR blob into readable JSON:
+
+- hashes and bytes as hex
+- accounts and contracts as strkeys
+- enums by name
+- ScVals in the notation `simulate` prints
+
+Types are `envelope`, `result`, `meta`, `ledger-key`, `ledger-entry`, `ledger-entry-data`, `scval`, `soroban-data` and `auth-entry`. Leave the type out to detect it; a blob that fits several types is reported as ambiguous instead of guessed. `-` reads from standard input.
+
+`encode scval` turns the argument syntax `simulate` takes into base64 ScVal XDR:
+
+```
+soroprobe encode scval 'vec:["sym:Balance","addr:GABC…"]'
+soroprobe decode scval AAAAAwAAACo=
+```
+
+Both run locally and never touch the network.
+
+### `soroprobe estimate-deploy <contract.wasm> [constructor-arg...]`
+
+Prices a deployment without making it. It simulates uploading the WASM and instantiating it, and reports resources and fees for each step and their total.
+
+- Constructor arguments are typed from the WASM's own interface.
+- A WASM already on chain is detected by its hash and its upload shown as costing nothing.
+- The size is checked against the network's contract size limit.
+- The new contract's address depends on the deployer (`--source`) and a random salt, so the reported address is an example.
+- For a new WASM the network may not be able to price the instantiation until the upload has happened; the report says so.
+
+Nothing is submitted.
+
 ### `soroprobe serve`
 
 Runs the HTTP API. It binds `127.0.0.1:8080` by default; `--addr` overrides

@@ -443,6 +443,9 @@
           "error": {
             "type": "string"
           },
+          "error_explanation": {
+            "$ref": "#/components/schemas/ErrorExplanation"
+          },
           "return_value": {},
           "return_value_xdr": {
             "type": "string"
@@ -480,6 +483,42 @@
           "footprint",
           "latest_ledger"
         ]
+      },
+      "ErrorExplanation": {
+        "type": "object",
+        "description": "What a failing call's error means: a contract error named from the contract's error enum, or a host error type and code described.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["contract", "host"]
+          },
+          "raw": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "code": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "enum": {
+            "type": "string"
+          },
+          "doc": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
       },
       "Cost": {
         "type": "object",

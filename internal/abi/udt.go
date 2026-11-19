@@ -29,6 +29,9 @@ type Case struct {
 	Value uint32 `json:"value,omitempty"`
 	// Payload are the types a union case carries; empty for a void case.
 	Payload []Type `json:"payload,omitempty"`
+	// Doc is the doc comment on an error enum case, which is what a failing
+	// call's error code is explained with.
+	Doc string `json:"doc,omitempty"`
 }
 
 // specUDT decodes a spec entry that declares a user-defined type.
@@ -65,7 +68,7 @@ func specUDT(entry xdr.ScSpecEntry) (UDT, bool) {
 	if e, ok := entry.GetUdtErrorEnumV0(); ok {
 		udt := UDT{Kind: UDTErrorEnum, Name: e.Name}
 		for _, c := range e.Cases {
-			udt.Cases = append(udt.Cases, Case{Name: c.Name, Value: uint32(c.Value)})
+			udt.Cases = append(udt.Cases, Case{Name: c.Name, Value: uint32(c.Value), Doc: c.Doc})
 		}
 		return udt, true
 	}

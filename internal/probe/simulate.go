@@ -232,6 +232,9 @@ type SimulateResult struct {
 	Success bool `json:"success"`
 	// Error carries the simulation failure message when Success is false.
 	Error string `json:"error,omitempty"`
+	// ErrorExplanation names the error in Error: a contract error is mapped
+	// to its error enum case, a host error to what its type and code mean.
+	ErrorExplanation *ErrorExplanation `json:"error_explanation,omitempty"`
 
 	// ReturnValue is the decoded return value, JSON-marshalable.
 	ReturnValue any `json:"return_value"`
@@ -359,6 +362,9 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 
 	result.Signature = typed.signature
 	result.ABINote = typed.note
+	if !result.Success {
+		result.ErrorExplanation = p.explainFailure(ctx, req.ContractID, result.Error)
+	}
 	if typed.changed {
 		result.EncodedArgs = typed.args
 	}
