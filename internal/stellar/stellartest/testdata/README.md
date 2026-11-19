@@ -17,6 +17,11 @@ Test fixtures in this directory are recorded from the Stellar testnet and replay
 - **Undeployed Contract**: `CCV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XMCW`
   - `ledger_entries_undeployed.json`: Empty response for an uninstantiated contract address.
 
+- **Transactions** (`getTransaction`, recorded from testnet):
+  - `transaction_success.json`: a successful token `approve` that emits a contract event.
+  - `transaction_failed.json`: a failed `update_price_feeds` that trapped on a storage access outside its footprint.
+  - `transaction_feebump.json`: a successful fee-bump transaction calling `set_price_stable`.
+
 - **Simulations**:
   - `simulate_success.json`: Successful simulation of the `decimals` call on SAC.
   - `simulate_failure.json`: Failed simulation of a non-existent function (`no_such_fn`).
