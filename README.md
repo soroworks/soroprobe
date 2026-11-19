@@ -734,6 +734,33 @@ soroprobe simulate CDLZ... transfer \
 | `vec` | `vec:["u32:1","u32:2"]`, `vec:[1, 2]` |
 | `map` | `map:[["sym:a","u32:1"],["sym:b","u32:2"]]` |
 
+A runnable version against the public testnet: it simulates a transfer of
+10000000 base units from the testnet friendbot account (funded, so the call
+succeeds) to the native-asset contract. Nothing is submitted. The
+`authorizations` section prints the arguments as they were encoded:
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10000000
+…
+SUCCESS  the call would succeed
+…
+authorizations
+  GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR
+    CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC::transfer("GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR", "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", "10000000")
+…
+```
+
+An argument that does not parse is rejected before any request is sent, and
+the error names its position (counted from 0):
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC decimals u32:abc
+error: arg 0: argument "u32:abc": expected a base-10 integer, got "abc"
+```
+
 ### Token amounts
 
 Token functions take amounts in **base units**, so 10 XLM-equivalent of a
