@@ -658,6 +658,48 @@ only verify sources and images you trust. Values starting with `-` are rejected
 for `--source`, `--rev` and `--image`, and metadata read from the contract is
 held to the same rule.
 
+### Comparing footprints: `simulate --compare <contract2>` and `soroprobe diff <a.json> <b.json>`
+
+`--compare` simulates the same call on a second contract, such as a new version of the same code. `diff` compares two saved `simulate --json` reports. Both print:
+
+- ledger entries only one side touches
+- entries that moved between read-only and read-write
+- the change in each resource
+
+Entries are described in human terms: the instance, the code by hash, and data entries with their decoded key and durability. The called contract is named `self`, so two versions line up entry for entry. `--json` output is sorted and stable for CI.
+
+### `soroprobe sweep <contract> <function>`
+
+Simulates one function across many argument sets and prints a table of resources per sample, to see how cost scales before a user hits a limit.
+
+Samples come from `--args-file` (a JSON array of argument arrays or `{label, args}` objects) or from `--template` with `--sizes`:
+
+```
+soroprobe sweep C... process --template 'vec:[{repeat:"u32:7"}]' --sizes 1..64:8
+```
+
+In a template, `{n}` is the size and `{repeat:SPEC}` repeats SPEC n times. Simulations run at most `--concurrency` (default 4) at a time. Each row is judged against the network's per-transaction limits, and the output names the largest sample, in the order given, that succeeds within them.
+
+### Call trees: `simulate --trace`
+
+Prints the cross-contract call tree rebuilt from the simulation's `fn_call` and `fn_return` diagnostic events:
+
+```
+call trace
+  CCLV… swap(amount: 10, min_out: 9)
+    CDLZ… transfer(10)
+      -> null
+    -> 9
+```
+
+Each call shows its contract, function, decoded arguments (named from the contract's interface where it can be read) and return value. A contract error appears at the frame that raised it. `--json` emits the tree as nested objects under `trace`.
+
+### Prebuilt envelopes: `simulate --envelope <base64>`
+
+Simulates a transaction envelope exactly as a wallet or dApp built it (`--envelope-file`, `-` for stdin, reads it from a file). The call is decoded, and named from the target contract's interface when available, and the result, cost, footprint and authorizations are reported as usual.
+
+An envelope with more than one operation, or with an operation that runs no contract, is rejected with an explanation.
+
 ### `soroprobe serve`
 
 Runs the HTTP API. It binds `127.0.0.1:8080` by default; `--addr` overrides
