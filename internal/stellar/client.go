@@ -38,6 +38,10 @@ type Client interface {
 	GetNetwork(ctx context.Context) (protocol.GetNetworkResponse, error)
 	// GetHealth reports RPC server health and its retention window.
 	GetHealth(ctx context.Context) (protocol.GetHealthResponse, error)
+	// GetTransaction fetches a submitted transaction by its hash. A
+	// transaction outside the RPC's retention window is reported with
+	// status NOT_FOUND, not as an error.
+	GetTransaction(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error)
 }
 
 // RPCClient is the live Client, backed by the Stellar RPC JSON-RPC API.
@@ -157,6 +161,20 @@ func (c *RPCClient) GetNetwork(ctx context.Context) (protocol.GetNetworkResponse
 	resp, err := c.inner.GetNetwork(ctx)
 	if err != nil {
 		return resp, fmt.Errorf("getNetwork: %w", err)
+	}
+	return resp, nil
+}
+
+// GetTransaction implements Client.
+func (c *RPCClient) GetTransaction(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := c.inner.GetTransaction(ctx, req)
+	c.log.Debug("getTransaction", "hash", req.Hash, "status", resp.Status, "took", time.Since(start), "err", err)
+	if err != nil {
+		return resp, fmt.Errorf("getTransaction: %w", err)
 	}
 	return resp, nil
 }
