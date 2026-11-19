@@ -786,6 +786,28 @@ rounding error. An amount with more fractional digits than the token has
 decimals — `i128:10.12345@2` — is **rejected** rather than rounded, because a
 rounded amount is a different amount. Negative amounts and zero work.
 
+To see the conversion, simulate a 10.5-token transfer of the testnet native
+asset (7 decimals) and read the encoded amount back from the authorization it
+requires (`auth` in `--json` output):
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10.5@7 --json | jq -r '.auth[0].root_invocation.args[2]'
+105000000
+```
+
+Too many fractional digits fail before anything is simulated:
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10.12345@2
+error: arg 2: argument "i128:10.12345@2": amount "10.12345@2" has 5 fractional digits but the token has 2 decimals, so it cannot be represented exactly
+```
+
 The scale is part of the argument, so it needs a type prefix: a bare `10.5@7`
 is not an amount, it is a string.
 
