@@ -691,6 +691,24 @@ entries, and expired entries are dropped on read.
 `--log-level`, `--log-format`, `--timeout`, `--warn-ledgers`,
 `--critical-ledgers`, `--sorovault-url`.
 
+They apply to every command and can go before or after it. This inspects the
+testnet native-asset contract against an explicit endpoint, with a 30-second
+RPC timeout and a wider warning threshold:
+
+```bash
+soroprobe inspect CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --rpc-url https://soroban-testnet.stellar.org \
+  --network-passphrase "Test SDF Network ; September 2015" \
+  --timeout 30s --warn-ledgers 200000 --json | jq '.instance.thresholds'
+```
+
+```json
+{
+  "warn": 200000,
+  "critical": 17280
+}
+```
+
 ## Argument encoding
 
 Arguments use a `type:value` form:
