@@ -110,6 +110,11 @@ type Fake struct {
 	LedgerCloseInterval   time.Duration
 	LatestLedgerCloseTime int64
 
+	// FeeStats is what getFeeStats reports; NewFake loads fee_stats.json.
+	// FeeStatsErr injects a getFeeStats failure.
+	FeeStats    protocol.GetFeeStatsResponse
+	FeeStatsErr error
+
 	// HealthErr and NetworkErr inject getHealth and getNetwork failures.
 	HealthErr  error
 	NetworkErr error
@@ -169,6 +174,7 @@ func NewFake(t testing.TB) *Fake {
 	f.Simulations["no_such_fn"] = LoadSimulate(t, "simulate_failure.json")
 	f.Simulations["transfer"] = LoadSimulate(t, "simulate_auth.json")
 	f.Simulations[ExtendFootprintTTL] = LoadSimulate(t, "simulate_extend.json")
+	Load(t, "fee_stats.json", &f.FeeStats)
 	return f
 }
 
@@ -263,6 +269,14 @@ func (f *Fake) GetNetwork(context.Context) (protocol.GetNetworkResponse, error) 
 		passphrase = "Test SDF Network ; September 2015"
 	}
 	return protocol.GetNetworkResponse{Passphrase: passphrase}, nil
+}
+
+// GetFeeStats implements stellar.Client.
+func (f *Fake) GetFeeStats(context.Context) (protocol.GetFeeStatsResponse, error) {
+	if f.FeeStatsErr != nil {
+		return protocol.GetFeeStatsResponse{}, f.FeeStatsErr
+	}
+	return f.FeeStats, nil
 }
 
 // GetHealth implements stellar.Client.

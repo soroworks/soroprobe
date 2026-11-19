@@ -53,6 +53,10 @@ type CheckRequest struct {
 	// ExtendLedgers is how far to price the extension. Defaults to
 	// DefaultExtendLedgers.
 	ExtendLedgers uint32 `json:"extend_ledgers,omitempty" yaml:"extend_ledgers,omitempty"`
+	// HeadroomPercent is the share of a network limit the simulated call
+	// may use before the headroom check warns. Zero means
+	// DefaultHeadroomPercent.
+	HeadroomPercent float64 `json:"headroom_percent,omitempty" yaml:"headroom_percent,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -128,6 +132,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&codeTTLStep{},
 		&dataTTLStep{},
 		&simulateStep{},
+		&headroomStep{},
 		&expectStep{p: p},
 		&standardStep{p: p},
 		&adminStep{p: p},
@@ -185,9 +190,10 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 	var sim *SimulateResult
 	if inspect.Deployed && req.Function != "" {
 		sim, err = p.Simulate(ctx, SimulateRequest{
-			ContractID: req.ContractID,
-			Function:   req.Function,
-			Args:       req.Args,
+			ContractID:      req.ContractID,
+			Function:        req.Function,
+			Args:            req.Args,
+			HeadroomPercent: req.HeadroomPercent,
 		})
 		if err != nil {
 			return nil, err
@@ -434,4 +440,34 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+// headroomStep warns when the simulated call uses more of a network limit
+// than the headroom threshold allows: it passes today, but grows into a
+// failure as the contract's data does. It says nothing without a simulation
+// or when the network reported no limits.
+type headroomStep struct{}
+
+func (s *headroomStep) Name() string { return "headroom" }
+
+func (s *headroomStep) Run(_ context.Context, _ CheckRequest, _ *InspectResult, simulate *SimulateResult) ([]Check, error) {
+	if simulate == nil || !simulate.Success || simulate.Usage == nil {
+		return nil, nil
+	}
+	u := simulate.Usage
+	if u.Warning != "" {
+		return []Check{{Name: "headroom", Outcome: OutcomeWarn, Detail: u.Warning}}, nil
+	}
+	highest := u.Resources[0]
+	for _, r := range u.Resources[1:] {
+		if r.Percent > highest.Percent {
+			highest = r
+		}
+	}
+	return []Check{{
+		Name:    "headroom",
+		Outcome: OutcomePass,
+		Detail: fmt.Sprintf("every resource within %.0f%% of its limit; highest is %s at %.1f%%",
+			u.HeadroomPercent, highest.Name, highest.Percent),
+	}}, nil
 }

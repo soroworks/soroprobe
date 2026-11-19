@@ -17,6 +17,9 @@ Test fixtures in this directory are recorded from the Stellar testnet and replay
 - **Undeployed Contract**: `CCV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XMCW`
   - `ledger_entries_undeployed.json`: Empty response for an uninstantiated contract address.
 
+- **Fee stats**:
+  - `fee_stats.json`: A `getFeeStats` response, the Soroban and classic inclusion fee percentiles `simulate` recommends fees from.
+
 - **Simulations**:
   - `simulate_success.json`: Successful simulation of the `decimals` call on SAC.
   - `simulate_failure.json`: Failed simulation of a non-existent function (`no_such_fn`).
