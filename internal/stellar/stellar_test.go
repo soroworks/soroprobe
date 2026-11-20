@@ -1,11 +1,14 @@
 package stellar_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/soroworks/soroprobe/internal/stellar"
@@ -51,6 +54,42 @@ func TestParseContractIDRejectsBadInput(t *testing.T) {
 
 			_, err := stellar.ParseContractID(tt.in)
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestParseContractIDEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	// Well-formed strkeys with the contract version byte but a payload that is
+	// not 32 bytes: the checksum is valid, so only a length check rejects them.
+	short, err := strkey.Encode(strkey.VersionByteContract, make([]byte, 31))
+	require.NoError(t, err)
+	long, err := strkey.Encode(strkey.VersionByteContract, make([]byte, 33))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"lowercase", strings.ToLower(testContract)},
+		{"leading space", " " + testContract},
+		{"trailing newline", testContract + "\n"},
+		{"one char too long", testContract + "A"},
+		{"one char too short", testContract[:len(testContract)-1]},
+		{"31-byte payload", short},
+		{"33-byte payload", long},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := stellar.ParseContractID(tt.in)
+			require.Error(t, err)
+			// Errors must quote the offending input so users can spot it.
+			assert.Contains(t, err.Error(), "invalid contract id")
+			assert.Contains(t, err.Error(), fmt.Sprintf("%q", tt.in))
 		})
 	}
 }
