@@ -245,6 +245,68 @@ func TestEncodeErrors(t *testing.T) {
 	}
 }
 
+func TestEncodeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		spec     string
+		wantType xdr.ScValType
+		// wantDecoded is only checked on success.
+		wantDecoded any
+		// wantErr, when set, is a fragment the error must contain.
+		wantErr string
+	}{
+		// Empty input.
+		{name: "empty spec infers an empty string", spec: "", wantType: xdr.ScValTypeScvString, wantDecoded: ""},
+		{name: "empty symbol is allowed", spec: "sym:", wantType: xdr.ScValTypeScvSymbol, wantDecoded: ""},
+		{name: "empty string literal", spec: "str:", wantType: xdr.ScValTypeScvString, wantDecoded: ""},
+		{name: "empty u32", spec: "u32:", wantErr: "expected"},
+		{name: "empty i128", spec: "i128:", wantErr: "expected"},
+		{name: "empty address", spec: "addr:", wantErr: "argument"},
+
+		// Boundary values: the last value that fits and the first that does not.
+		{name: "i32 min", spec: "i32:-2147483648", wantType: xdr.ScValTypeScvI32, wantDecoded: int32(math.MinInt32)},
+		{name: "i32 max", spec: "i32:2147483647", wantType: xdr.ScValTypeScvI32, wantDecoded: int32(math.MaxInt32)},
+		{name: "i32 underflow", spec: "i32:-2147483649", wantErr: "argument"},
+		{name: "u64 overflow", spec: "u64:18446744073709551616", wantErr: "argument"},
+		{name: "i64 max", spec: "i64:9223372036854775807", wantType: xdr.ScValTypeScvI64, wantDecoded: "9223372036854775807"},
+		{name: "i64 overflow", spec: "i64:9223372036854775808", wantErr: "argument"},
+		{name: "i64 underflow", spec: "i64:-9223372036854775809", wantErr: "argument"},
+		{name: "u256 zero", spec: "u256:0", wantType: xdr.ScValTypeScvU256, wantDecoded: "0"},
+		{
+			name:    "i256 overflow",
+			spec:    "i256:57896044618658097711785492504343953926634992332820282019728792003956564819968",
+			wantErr: "argument",
+		},
+
+		// Invalid input.
+		{name: "bytes with odd length", spec: "bytes:abc", wantErr: "argument"},
+		{name: "integer with surrounding junk", spec: "u32:12abc", wantErr: "argument"},
+	}
+
+	codec := scval.NewRegistry()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := codec.Encode(tt.spec)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Contains(t, err.Error(), tt.spec, "error should quote the offending argument")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, got.Type)
+			decoded, err := codec.Decode(got)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDecoded, decoded)
+		})
+	}
+}
+
 func TestEncodeAllReportsArgIndex(t *testing.T) {
 	t.Parallel()
 
