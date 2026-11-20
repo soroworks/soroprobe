@@ -95,3 +95,40 @@ func TestParseMetaWithoutASectionIsEmptyNotAnError(t *testing.T) {
 	_, err = abi.ParseMeta([]byte("not wasm"))
 	require.Error(t, err)
 }
+
+func TestParseMetaEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		wasm    []byte
+		want    map[string]string
+		wantErr bool
+	}{
+		{name: "nil input", wasm: nil, wantErr: true},
+		{name: "empty input", wasm: []byte{}, wantErr: true},
+		{
+			name: "empty key and value are kept",
+			wasm: abitest.WasmWithMeta(t, nil, []abitest.Meta{{Key: "", Val: ""}}),
+			want: map[string]string{"": ""},
+		},
+		{
+			name: "empty value does not drop the key",
+			wasm: abitest.WasmWithMeta(t, nil, []abitest.Meta{{Key: "rsver", Val: ""}, {Key: "bldimg", Val: "img"}}),
+			want: map[string]string{"rsver": "", "bldimg": "img"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			meta, err := abi.ParseMeta(tt.wasm)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, meta)
+		})
+	}
+}
