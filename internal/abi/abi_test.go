@@ -237,3 +237,24 @@ func TestNetworkName(t *testing.T) {
 	assert.Equal(t, "public", abi.NetworkName("Public Global Stellar Network ; September 2015"))
 	assert.Equal(t, "Standalone Network ; February 2017", abi.NetworkName("Standalone Network ; February 2017"))
 }
+
+func TestNetworkNameEdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		passphrase string
+		want       string
+	}{
+		{"empty input passes through", "", ""},
+		{"futurenet", "Test SDF Future Network ; October 2022", "futurenet"},
+		{"match is case sensitive", "test sdf network ; september 2015", "test sdf network ; september 2015"},
+		{"surrounding whitespace is not trimmed", " Test SDF Network ; September 2015 ", " Test SDF Network ; September 2015 "},
+		{"prefix of a known passphrase is not a match", "Public Global Stellar Network", "Public Global Stellar Network"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, abi.NetworkName(tc.passphrase))
+		})
+	}
+}
