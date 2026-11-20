@@ -381,3 +381,65 @@ func TestDecodeUnsupportedTypeNamesItself(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "scval.Decode", "error should point a contributor at the fix")
 }
+
+func TestTypeNamesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	noop := func(string) (xdr.ScVal, error) { return xdr.ScVal{}, nil }
+
+	tests := []struct {
+		name  string
+		setup func(r *scval.Registry)
+		check func(t *testing.T, names []string)
+	}{
+		{
+			name:  "built-ins are returned sorted",
+			setup: func(*scval.Registry) {},
+			check: func(t *testing.T, names []string) {
+				require.NotEmpty(t, names)
+				assert.IsNonDecreasing(t, names)
+			},
+		},
+		{
+			name: "names are lower-cased and a repeat registration does not duplicate",
+			setup: func(r *scval.Registry) {
+				r.Register("ZZ_Custom", noop)
+				r.Register("zz_custom", noop)
+			},
+			check: func(t *testing.T, names []string) {
+				assert.Equal(t, 1, countOf(names, "zz_custom"))
+				assert.NotContains(t, names, "ZZ_Custom")
+			},
+		},
+		{
+			name: "an empty type name is listed and sorts first",
+			setup: func(r *scval.Registry) {
+				r.Register("", noop)
+			},
+			check: func(t *testing.T, names []string) {
+				require.NotEmpty(t, names)
+				assert.Equal(t, "", names[0])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := scval.NewRegistry()
+			tt.setup(r)
+			tt.check(t, r.TypeNames())
+		})
+	}
+}
+
+func countOf(names []string, want string) int {
+	n := 0
+	for _, name := range names {
+		if name == want {
+			n++
+		}
+	}
+	return n
+}
