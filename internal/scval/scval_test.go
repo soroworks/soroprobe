@@ -254,13 +254,39 @@ func TestEncodeAllReportsArgIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "arg 2")
 }
 
-func TestEncodeAllEmpty(t *testing.T) {
+func TestEncodeAllEdgeCases(t *testing.T) {
 	t.Parallel()
 
+	tests := []struct {
+		name    string
+		specs   []string
+		wantLen int
+		wantErr string // substring of the expected error; empty means success
+	}{
+		{name: "nil input", specs: nil, wantLen: 0},
+		{name: "empty non-nil input", specs: []string{}, wantLen: 0},
+		{name: "u32 boundaries", specs: []string{"u32:0", fmt.Sprintf("u32:%d", uint32(math.MaxUint32))}, wantLen: 2},
+		{name: "u32 overflow", specs: []string{"u32:4294967296"}, wantErr: "arg 0"},
+		{name: "invalid first argument", specs: []string{"u32:bad", "u32:1"}, wantErr: "arg 0"},
+	}
+
 	codec := scval.NewRegistry()
-	args, err := codec.EncodeAll(nil)
-	require.NoError(t, err)
-	assert.Empty(t, args)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			args, err := codec.EncodeAll(tt.specs)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, args, "no partial results on failure")
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, args, "success returns a non-nil slice")
+			assert.Len(t, args, tt.wantLen)
+		})
+	}
 }
 
 func TestRegisterCustomType(t *testing.T) {
