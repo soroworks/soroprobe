@@ -519,6 +519,13 @@ func TestParseLogLevel(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func BenchmarkParseLogLevel(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = config.ParseLogLevel("info")
+	}
+}
+
 func TestLoadInspectCacheTTL(t *testing.T) {
 	path := writeConfig(t, `{"inspect_cache_ttl":"5s"}`)
 
