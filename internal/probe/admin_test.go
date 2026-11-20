@@ -140,3 +140,24 @@ func TestAdminFnAndKeyTogetherRejected(t *testing.T) {
 	_, err := p.Check(context.Background(), probe.CheckRequest{ContractID: stellartest.WasmContract, AdminFn: "a", AdminKey: "sym:A"})
 	require.Error(t, err)
 }
+
+func TestAdminCheckNameEdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		req  probe.CheckRequest
+	}{
+		{"admin function returns a non-address value", probe.CheckRequest{AdminFn: "decimals"}},
+		{"admin function that does not exist", probe.CheckRequest{AdminFn: "no_such_fn"}},
+		{"admin key with no matching storage entry", probe.CheckRequest{AdminKey: "sym:Missing"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checks := runCheck(t, networkProber(t, stellartest.NewFake(t), ""), tt.req)
+			c, ok := checks["admin"]
+			require.True(t, ok, "the check is reported under the name %q", "admin")
+			assert.Equal(t, "admin", c.Name)
+			assert.Equal(t, probe.OutcomeFail, c.Outcome)
+			assert.Contains(t, c.Detail, "could not resolve the admin")
+		})
+	}
+}
