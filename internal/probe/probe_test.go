@@ -3,6 +3,7 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -49,6 +50,26 @@ func TestNewValidatesOptions(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, p)
 	})
+}
+
+// BenchmarkNew tracks the cost of assembling a Prober from its options, which
+// every operation pays once.
+func BenchmarkNew(b *testing.B) {
+	opts := probe.Options{
+		Client:        &stellartest.Fake{},
+		SourceAccount: stellartest.SourceAccount,
+	}
+
+	b.ReportAllocs()
+	var p *probe.Prober
+	for b.Loop() {
+		var err error
+		p, err = probe.New(opts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	runtime.KeepAlive(p)
 }
 
 // --- simulate ---------------------------------------------------------------

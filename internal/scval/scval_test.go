@@ -3,6 +3,7 @@ package scval_test
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,17 @@ const (
 	testAccount  = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
 	testContract = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
 )
+
+// BenchmarkNewRegistry tracks the cost of building the default codec with all
+// built-in encoders installed.
+func BenchmarkNewRegistry(b *testing.B) {
+	b.ReportAllocs()
+	var reg *scval.Registry
+	for b.Loop() {
+		reg = scval.NewRegistry()
+	}
+	runtime.KeepAlive(reg)
+}
 
 func TestEncodeExplicitTypes(t *testing.T) {
 	t.Parallel()
