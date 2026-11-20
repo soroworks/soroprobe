@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -562,6 +563,9 @@ func TestParseLogFormat(t *testing.T) {
 		{"json", "json"},
 		{" JSON ", "json"},
 		{"", "text"},
+		// Whitespace-only input is trimmed to empty, so it means the default.
+		{"   ", "text"},
+		{"\t\n", "text"},
 	}
 
 	for _, tt := range tests {
@@ -578,6 +582,20 @@ func TestParseLogFormat(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "text")
 	assert.Contains(t, err.Error(), "json")
+}
+
+func TestParseLogFormatInvalid(t *testing.T) {
+	// Near-misses must not be accepted by prefix or substring, and the error
+	// must quote the input exactly as given (untrimmed) so the operator can
+	// see what was actually passed.
+	for _, in := range []string{"yaml", "jsonl", "js on", "tex", " xml ", "json\x00"} {
+		t.Run("["+in+"]", func(t *testing.T) {
+			got, err := config.ParseLogFormat(in)
+			require.Error(t, err)
+			assert.Empty(t, got)
+			assert.Contains(t, err.Error(), fmt.Sprintf("%q", in))
+		})
+	}
 }
 
 func TestLoggerJSONEmitsParseableLines(t *testing.T) {
