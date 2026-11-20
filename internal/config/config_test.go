@@ -519,6 +519,43 @@ func TestParseLogLevel(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseLogLevelEdgeCases(t *testing.T) {
+	valid := []struct {
+		name string
+		in   string
+		want slog.Level
+	}{
+		{"whitespace only", "   ", slog.LevelInfo},
+		{"tabs and newlines around name", "\t\nerror\n", slog.LevelError},
+		{"mixed case alias", "WaRnInG", slog.LevelWarn},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := config.ParseLogLevel(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	invalid := []struct {
+		name string
+		in   string
+	}{
+		{"numeric level", "1"},
+		{"prefix of a valid name", "deb"},
+		{"valid name with suffix", "debugger"},
+		{"inner whitespace", "de bug"},
+		{"unsupported slog name", "trace"},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := config.ParseLogLevel(tt.in)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.in, "error should quote the offending input")
+		})
+	}
+}
+
 func TestLoadInspectCacheTTL(t *testing.T) {
 	path := writeConfig(t, `{"inspect_cache_ttl":"5s"}`)
 
