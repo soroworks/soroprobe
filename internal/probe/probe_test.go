@@ -51,6 +51,49 @@ func TestNewValidatesOptions(t *testing.T) {
 	})
 }
 
+func TestNewEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    probe.Options
+		wantErr string
+	}{
+		{
+			name:    "empty options report the missing client first",
+			opts:    probe.Options{},
+			wantErr: "stellar client is required",
+		},
+		{
+			name:    "empty source account is rejected",
+			opts:    probe.Options{Client: &stellartest.Fake{}, SourceAccount: ""},
+			wantErr: "source account public key is required",
+		},
+		{
+			name: "negative base fee falls back to the default",
+			opts: probe.Options{Client: &stellartest.Fake{}, SourceAccount: stellartest.SourceAccount, BaseFee: -1},
+		},
+		{
+			name: "negative inspect cache TTL disables the cache",
+			opts: probe.Options{Client: &stellartest.Fake{}, SourceAccount: stellartest.SourceAccount, InspectCacheTTL: -time.Second},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p, err := probe.New(tc.opts)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				assert.Nil(t, p)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, p)
+		})
+	}
+}
+
 // --- simulate ---------------------------------------------------------------
 
 func TestSimulateSuccess(t *testing.T) {
