@@ -133,11 +133,28 @@ func TestDecodeEntryDataFromFixture(t *testing.T) {
 	require.NotNil(t, instance.Executable.WasmHash)
 }
 
-func TestDecodeEntryDataRejectsGarbage(t *testing.T) {
+func TestDecodeEntryDataRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
-	_, err := stellar.DecodeEntryData("not base64 xdr!!")
-	require.Error(t, err)
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty input", input: ""},
+		{name: "malformed base64", input: "not base64 xdr!!"},
+		{name: "invalid entry type", input: "/////w=="},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := stellar.DecodeEntryData(tt.input)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "decode ledger entry data")
+			assert.Equal(t, xdr.LedgerEntryData{}, data)
+		})
+	}
 }
 
 func TestBuildInvocationTx(t *testing.T) {
