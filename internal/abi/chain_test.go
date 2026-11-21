@@ -68,6 +68,50 @@ func TestChainSourceCodeErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseWasmEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		wasm    []byte
+		wantErr string
+	}{
+		{
+			name:    "empty input",
+			wasm:    nil,
+			wantErr: "invalid Wasm module",
+		},
+		{
+			name:    "module without custom sections",
+			wasm:    []byte{0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00},
+			wantErr: "no such custom section",
+		},
+		{
+			name: "section length exceeds module",
+			wasm: []byte{
+				0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00,
+				0x00, 0x02, 'x',
+			},
+			wantErr: "invalid Wasm section length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			iface, err := abi.ParseWasm(tt.wasm)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, iface)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Empty(t, iface.Functions)
+			assert.Empty(t, iface.Types)
+		})
+	}
+}
+
 func TestParseMeta(t *testing.T) {
 	t.Parallel()
 
