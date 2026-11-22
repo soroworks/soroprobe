@@ -378,6 +378,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var adminFn, adminKey, rentPayer string
 	var upgradeability bool
 	var extendLedgers uint32
+	var fromSoroForge, soroforgeToken, network string
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -437,6 +438,16 @@ one that could not run, and the batch continues. --check-timeout supplies the
 default for entries that name none. With --file, the exit code is 2 if any
 check could not run, else 1 if any failed, else 0.
 
+--from-soroforge reads the contracts a SoroForge registry tracks and checks each
+one, instead of a hand-written check file that drifts out of date. It fetches
+GET /v1/contracts (following pagination) with a read-only bearer token from
+SOROFORGE_API_TOKEN or --soroforge-token, and compares the Wasm hash SoroForge
+recorded with the live one: a mismatch fails the check named wasm_hash and
+reports both hashes. --network selects the SoroForge network label (it defaults
+to the label for the configured passphrase); the RPC endpoint must serve that
+same network. An empty list, an authentication failure or a pagination error is
+exit 2, because no check ran.
+
 --report writes the JSON result to a file while the text report still goes to
 the terminal, so a CI run can keep readable logs and a machine-readable
 artifact. The file is written even when the check fails.
@@ -450,6 +461,18 @@ Inside GitHub Actions (GITHUB_ACTIONS is set) each failed or warned step also
 prints an ::error:: or ::warning:: line, which surfaces on the run summary
 instead of hiding in the log. --json and --quiet suppress them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
+			if fromSoroForge != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("give --from-soroforge or a contract ID, not both")
+				}
+				if file != "" {
+					return fmt.Errorf("give --from-soroforge or --file, not both")
+				}
+				return nil
+			}
+			if network != "" {
+				return fmt.Errorf("--network selects a SoroForge network; give it with --from-soroforge")
+			}
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract ID or --file, not both")
@@ -480,6 +503,11 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			if file != "" && (adminFn != "" || adminKey != "" || upgradeability || rentPayer != "") {
 				return fmt.Errorf("--admin-fn, --admin-key, --upgradeability and --rent-payer apply to a single contract, not --file")
 			}
+			if fromSoroForge != "" && (function != "" || len(callArgs) > 0 || expect != "" || standard != "" ||
+				keyFile != "" || len(dataKeys) > 0 || cmd.Flags().Changed("durability") ||
+				adminFn != "" || adminKey != "" || upgradeability || rentPayer != "") {
+				return fmt.Errorf("--fn, --arg, --expect, --key, --key-file, --durability, --standard, --admin-fn, --admin-key, --upgradeability and --rent-payer apply to a single contract, not --from-soroforge")
+			}
 			outputFormat, err := selectOutputFormat(cmd, opts, format)
 			if err != nil {
 				return err
@@ -490,6 +518,10 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				return err
 			}
 			defer func() { err = errors.Join(err, report.close()) }()
+
+			if fromSoroForge != "" {
+				return runFromSoroForge(cmd, opts, fromSoroForge, soroforgeToken, network, checkTimeout, concurrency, report, quiet, outputFormat)
+			}
 
 			if file != "" {
 				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet, outputFormat)
@@ -560,10 +592,16 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys for the TTL check, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
+	cmd.Flags().StringVar(&fromSoroForge, "from-soroforge", "",
+		"fetch the contracts a SoroForge API tracks and check each (URL, e.g. http://localhost:8080)")
+	cmd.Flags().StringVar(&soroforgeToken, "soroforge-token", "",
+		fmt.Sprintf("read-only SoroForge API token (env %s)", config.EnvSoroForgeToken))
+	cmd.Flags().StringVar(&network, "network", "",
+		"SoroForge network label to read with --from-soroforge (default: derived from the network passphrase)")
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
-		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
+		`default time limit for each check in --file or --from-soroforge; a per-entry "timeout" wins (0 means no limit)`)
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json or markdown")
-	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file checks to run at once")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file or --from-soroforge checks to run at once")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false,
 		"print no report; the exit code is the whole answer (errors still reach stderr)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
@@ -590,7 +628,12 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 	}
 	applyDefaultTimeout(&req, checkTimeout)
 	req.Concurrency = concurrency
+	return runCheckBatch(cmd, opts, req, report, quiet, format)
+}
 
+// runCheckBatch runs an assembled batch and renders it exactly as --file does,
+// so a batch from a file and one read from SoroForge cannot report differently.
+func runCheckBatch(cmd *cobra.Command, opts *options, req probe.BatchRequest, report *reportFile, quiet bool, format string) error {
 	p, cleanup, err := opts.prober()
 	if err != nil {
 		return err

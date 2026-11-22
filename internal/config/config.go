@@ -94,6 +94,10 @@ const (
 	EnvHTTPTrustForwardedFor   = "HTTP_TRUST_FORWARDED_FOR"
 	EnvHTTPTLSCert             = "HTTP_TLS_CERT"
 	EnvHTTPTLSKey              = "HTTP_TLS_KEY"
+
+	// EnvSoroForgeToken names the variable that carries the token; the value
+	// is the variable's name, not a credential.
+	EnvSoroForgeToken = "SOROFORGE_API_TOKEN" //nolint:gosec // a variable name, not a secret.
 )
 
 // Config holds every setting SoroProbe needs.
@@ -132,6 +136,11 @@ type Config struct {
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
+	// SoroForgeToken authenticates the read-only SoroForge API call made by
+	// `check --from-soroforge`. It is a secret, so it is absent from the config
+	// file and comes from SOROFORGE_API_TOKEN or --soroforge-token. Empty means
+	// no token is available and the command refuses before sending a request.
+	SoroForgeToken string `json:"-"`
 	// InspectCacheTTL is how long `serve` may reuse an inspect result for the
 	// same contract and key set. Zero, the default, disables the cache; a few
 	// seconds suits dashboards, because TTLs change at most once per ledger.
@@ -191,6 +200,9 @@ type fileConfig struct {
 	// APIToken is accepted so that a file carrying the key still loads, and
 	// is never applied: the token is a secret and comes from API_TOKEN only.
 	APIToken *string `json:"api_token" yaml:"api_token"`
+	// SoroForgeToken is accepted for the same reason and, like APIToken, never
+	// applied from the file: SOROFORGE_API_TOKEN is the place a secret belongs.
+	SoroForgeToken *string `json:"soroforge_token" yaml:"soroforge_token"`
 }
 
 // defaultCandidateFiles lists config filenames checked in order when no path is specified.
@@ -397,6 +409,7 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.LogFormat, lookup(EnvLogFormat))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
 	setString(&cfg.APIToken, lookup(EnvAPIToken))
+	setString(&cfg.SoroForgeToken, lookup(EnvSoroForgeToken))
 
 	if v := lookup(EnvTimeout); v != nil {
 		d, err := time.ParseDuration(*v)

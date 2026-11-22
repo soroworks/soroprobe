@@ -410,10 +410,13 @@ Combined health check, designed for CI.
 | `--key <spec>` | A contract data key to include in the TTL check. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Combined with `--key`. |
 | `--durability <d>` | Durability for `--key` lookups. |
+| `--from-soroforge <url>` | Read the contracts a [SoroForge](#checking-the-contracts-soroforge-tracks---from-soroforge) API tracks and check each. |
+| `--soroforge-token <token>` | Read-only SoroForge API token. Defaults to `SOROFORGE_API_TOKEN`. |
+| `--network <name>` | SoroForge network label for `--from-soroforge`. Defaults to the label for the configured passphrase. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
-Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, then
-`simulate`.
+Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, `wasm_hash` (when a
+recorded hash is given), any `data_ttl`, then `simulate`.
 
 **Exit codes:**
 
@@ -461,7 +464,8 @@ result 1 passed, 1 failed, 0 could not run
 ```
 
 Each entry takes `name` (defaults to the contract ID, and must be unique),
-`contract_id`, `function`, `args`, `data_keys`, `data_durability` and `timeout`.
+`contract_id`, `function`, `args`, `data_keys`, `data_durability`,
+`expected_wasm_hash` and `timeout`.
 Unknown keys are rejected, so a typo cannot silently drop a step. Checks run one
 at a time by default to stay inside public RPC rate limits; `--concurrency N`
 runs up to N checks at once for endpoints that allow it. Results remain in file
@@ -490,6 +494,47 @@ not a reason to break a build. Only `critical`, `expired` and `missing` fail.
 functions from the ledger, and guessing a name would produce a failure that
 looks like a broken contract but is really a broken guess. Without `--fn` the
 simulation step is honestly reported as `SKIP`.
+
+#### Checking the contracts SoroForge tracks: `--from-soroforge`
+
+A check file lists contracts by hand, so it drifts: a contract deployed last
+week is missing, and one upgraded last month still appears healthy. When a team
+deploys with [SoroForge](https://github.com/soroworks/soroforge), its API already
+knows which contracts exist on a network and which Wasm hash was live when each
+change was confirmed, so SoroProbe can read that list instead:
+
+```bash
+export SOROFORGE_API_TOKEN=...   # a read-scoped token is enough
+soroprobe check --from-soroforge http://localhost:8080 --network testnet
+```
+
+```
+  PASS   token   instance_ttl: live for 58912 more ledgers (~3.4 days, …)
+  FAIL   vault   wasm_hash: drift: the registry recorded 9c1e… but the deployed code is 3f2a…
+
+result 1 passed, 1 failed, 0 could not run
+```
+
+SoroProbe reads `GET /v1/contracts?network=…`, following `has_more` (and
+`next_offset` when present) until every page has been read. `--network` names
+the SoroForge network label; it defaults to the label for the configured
+passphrase (`testnet`, `public` or `futurenet`), and the RPC endpoint must serve
+that same network. The alias SoroForge records is the name in the report.
+
+Each contract gets the usual checks plus `wasm_hash`, which compares the hash
+SoroForge recorded with the one the contract is actually running. A mismatch
+fails the check and prints both hashes: the catalog says one build is live and
+the chain says another. Stellar Asset Contracts have no code entry, so there the
+step is `SKIP` rather than an invented comparison. The same comparison is
+available per entry in `--file` as `expected_wasm_hash`.
+
+The token only needs the read scope. `--soroforge-token` overrides
+`SOROFORGE_API_TOKEN`. Authentication failures (401/403), an unknown network
+(400), rate limiting (429), a broken page of results and any other registry
+failure are **exit code 2**: no check ran, and a build must not pass on that. An
+empty list is exit 2 as well, because it usually means the wrong `--network`.
+`--quiet`, `--json`, `--format`, `--report`, `--check-timeout` and
+`--concurrency` work exactly as they do with `--file`.
 
 #### Verifying a token interface: `--standard`
 
@@ -977,6 +1022,7 @@ Precedence, lowest to highest: **defaults → top-level config file keys → pro
 | `CODE_WARN_LEDGERS`, `CODE_CRITICAL_LEDGERS` | `--code-warn-ledgers`, `--code-critical-ledgers` | global thresholds |
 | `DATA_WARN_LEDGERS`, `DATA_CRITICAL_LEDGERS` | `--data-warn-ledgers`, `--data-critical-ledgers` | global thresholds |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
+| `SOROFORGE_API_TOKEN` | `--soroforge-token` (on `check`) | unset — required by `--from-soroforge` |
 | `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` (then `./soroprobe.yaml`, `./soroprobe.yml`) if present |
 | `SOROPROBE_PROFILE` | `--profile` | unset |
 
@@ -1062,6 +1108,7 @@ never submitted. There is a test asserting the envelope carries no signatures.
 ```
 cmd/soroprobe     cobra CLI and output rendering
 internal/config   defaults, config file and environment resolution
+internal/integration  read-only clients for sibling services (SoroForge)
 internal/stellar  Stellar RPC client behind an interface, ledger keys, tx building
   └── stellartest fixture-backed fake + the recorder that captures fixtures
 internal/scval    ScVal encode/decode behind an interface, with a type registry
