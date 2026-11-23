@@ -195,3 +195,53 @@ func TestRPCClientRespectsCallerDeadline(t *testing.T) {
 	_, err := client.GetLatestLedger(ctx)
 	require.Error(t, err, "a canceled context must not be ignored")
 }
+
+func TestRPCClientCloseEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// use exercises the client before it is closed.
+		use    func(t *testing.T, client *stellar.RPCClient)
+		closes int
+	}{
+		{
+			name:   "close without any request",
+			use:    func(*testing.T, *stellar.RPCClient) {},
+			closes: 1,
+		},
+		{
+			name: "close after a request",
+			use: func(t *testing.T, client *stellar.RPCClient) {
+				_, err := client.GetHealth(context.Background())
+				require.NoError(t, err)
+			},
+			closes: 1,
+		},
+		{
+			name:   "closing twice is a no-op",
+			use:    func(*testing.T, *stellar.RPCClient) {},
+			closes: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stub := newRPCStub(t, map[string]any{
+				"getHealth": protocol.GetHealthResponse{Status: "healthy"},
+			})
+			client, err := stellar.New(stellar.Options{URL: stub.server.URL, Timeout: 5 * time.Second})
+			require.NoError(t, err)
+
+			tt.use(t, client)
+			for range tt.closes {
+				assert.NoError(t, client.Close())
+			}
+
+			// A closed client refuses further requests instead of hanging.
+			_, err = client.GetHealth(context.Background())
+			assert.Error(t, err)
+		})
+	}
+}

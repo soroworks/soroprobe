@@ -1,6 +1,7 @@
 package probe_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -46,6 +47,24 @@ func TestEstimateTotalFee(t *testing.T) {
 			resourceFee: 10_000_000,
 			baseFee:     1000,
 			want:        10_001_000,
+		},
+		{
+			name:        "base fee of one is kept",
+			resourceFee: 500,
+			baseFee:     1,
+			want:        501,
+		},
+		{
+			name:        "minimum int64 base fee uses default",
+			resourceFee: 500,
+			baseFee:     math.MinInt64,
+			want:        500 + probe.DefaultBaseFee,
+		},
+		{
+			name:        "zero resource fee and zero base fee",
+			resourceFee: 0,
+			baseFee:     0,
+			want:        probe.DefaultBaseFee,
 		},
 	}
 

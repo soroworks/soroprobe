@@ -142,6 +142,28 @@ func TestHasType(t *testing.T) {
 	}
 }
 
+func TestHasTypeEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	codec := scval.NewRegistry()
+	tests := []struct {
+		name string
+		spec string
+		want bool
+	}{
+		{name: "empty spec", spec: "", want: false},
+		{name: "empty type prefix", spec: ":5", want: false},
+		{name: "known type with empty literal", spec: "u32:", want: true},
+		{name: "bare type name without colon", spec: "u32", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, codec.HasType(tt.spec))
+		})
+	}
+}
+
 func TestEncodeDecimalAmounts(t *testing.T) {
 	t.Parallel()
 
@@ -356,6 +378,61 @@ func TestRegisterOverridesBuiltin(t *testing.T) {
 	got, err := codec.Encode("u32:999")
 	require.NoError(t, err)
 	assert.EqualValues(t, 7, *got.U32)
+}
+
+func TestRegisterEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	encodeU32 := func(n uint32) scval.EncodeFunc {
+		return func(string) (xdr.ScVal, error) {
+			v := xdr.Uint32(n)
+			return xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &v}, nil
+		}
+	}
+
+	tests := []struct {
+		name     string
+		register func(*scval.Registry)
+		spec     string
+		want     uint32
+	}{
+		{
+			name:     "mixed-case name is stored lowercase",
+			register: func(r *scval.Registry) { r.Register("MyType", encodeU32(1)) },
+			spec:     "mytype:x",
+			want:     1,
+		},
+		{
+			name: "re-registering a name keeps the last encoder",
+			register: func(r *scval.Registry) {
+				r.Register("answer", encodeU32(1))
+				r.Register("ANSWER", encodeU32(2))
+			},
+			spec: "Answer:x",
+			want: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			codec := scval.NewRegistry()
+			tt.register(codec)
+
+			got, err := codec.Encode(tt.spec)
+			require.NoError(t, err)
+			require.NotNil(t, got.U32)
+			assert.EqualValues(t, tt.want, *got.U32)
+		})
+	}
+
+	t.Run("empty name is not reachable from a spec", func(t *testing.T) {
+		t.Parallel()
+
+		codec := scval.NewRegistry()
+		codec.Register("", encodeU32(9))
+		assert.False(t, codec.HasType(":x"))
+	})
 }
 
 func TestDecodeCollections(t *testing.T) {
