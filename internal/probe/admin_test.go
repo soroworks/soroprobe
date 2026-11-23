@@ -128,6 +128,57 @@ func TestAdminUnresolvableFails(t *testing.T) {
 	assert.Contains(t, c.Detail, "could not resolve the admin")
 }
 
+func TestAdminEdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, fake *stellartest.Fake, admin xdr.AccountId)
+		wantOutcome probe.CheckOutcome
+		wantDetail  string
+	}{
+		{
+			name: "account does not exist",
+			setup: func(_ *testing.T, _ *stellartest.Fake, _ xdr.AccountId) {
+			},
+			wantOutcome: probe.OutcomeWarn,
+			wantDetail:  "does not exist on this network",
+		},
+		{
+			name: "zero master weight with no signers",
+			setup: func(t *testing.T, fake *stellartest.Fake, admin xdr.AccountId) {
+				fake.StoreAccount(t, xdr.AccountEntry{
+					AccountId: admin,
+					Balance:   1e9,
+					Thresholds: xdr.Thresholds{
+						0, 0, 0, 0,
+					},
+				})
+			},
+			wantOutcome: probe.OutcomePass,
+			wantDetail:  "master weight 0",
+		},
+		{
+			name: "admin function returns a non-address",
+			setup: func(t *testing.T, fake *stellartest.Fake, _ xdr.AccountId) {
+				fake.Simulations["admin"] = simResult(t, fake.Simulations["decimals"], strVal("not-an-address"))
+			},
+			wantOutcome: probe.OutcomeFail,
+			wantDetail:  "could not resolve the admin",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			admin := accountID(t, "edge")
+			fake := adminFake(t, admin)
+			tt.setup(t, fake, admin)
+
+			c := runCheck(t, networkProber(t, fake, "testnet"), probe.CheckRequest{AdminFn: "admin"})["admin"]
+			assert.Equal(t, tt.wantOutcome, c.Outcome)
+			assert.Contains(t, c.Detail, tt.wantDetail)
+		})
+	}
+}
+
 func TestAdminAbsentWithoutFlags(t *testing.T) {
 	c := runCheck(t, networkProber(t, stellartest.NewFake(t), ""), probe.CheckRequest{})
 	assert.NotContains(t, c, "admin")

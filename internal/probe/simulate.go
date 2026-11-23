@@ -40,6 +40,9 @@ type SimulateRequest struct {
 	// HeadroomPercent is the share of a network limit a resource may use
 	// before the result warns about it. Zero means DefaultHeadroomPercent.
 	HeadroomPercent float64 `json:"headroom_percent,omitempty"`
+	// Trace builds the cross-contract call tree from the simulation's
+	// diagnostic events.
+	Trace bool `json:"trace,omitempty"`
 	// MaxSpreadPercent, when set alongside Repeat, is the largest spread in
 	// any cost figure, as a percentage of its minimum, that is tolerated
 	// before the call is reported as noisy. A nil value reports the spread
@@ -248,6 +251,19 @@ type SimulateResult struct {
 
 	Cost      Cost      `json:"cost"`
 	Footprint Footprint `json:"footprint"`
+	// FootprintEntries describes each footprint entry in human terms,
+	// with data keys decoded and the called contract named "self". It is
+	// what two simulations are compared by.
+	FootprintEntries []FootprintEntry `json:"footprint_entries,omitempty"`
+
+	// Trace is the call tree, when it was asked for.
+	Trace []*TraceFrame `json:"trace,omitempty"`
+	// FromEnvelope is true when a prebuilt envelope was simulated as given;
+	// DecodedArgs are then its call's decoded arguments, and Source the
+	// envelope's source account.
+	FromEnvelope bool   `json:"from_envelope,omitempty"`
+	DecodedArgs  []any  `json:"decoded_args,omitempty"`
+	Source       string `json:"source,omitempty"`
 
 	// Comparison is the cost compared against a baseline, when a baseline
 	// was supplied.
@@ -265,9 +281,6 @@ type SimulateResult struct {
 
 	// Auth lists the authorization entries the call requires.
 	Auth []AuthEntry `json:"auth,omitempty"`
-
-	// Source is the account the call was simulated as.
-	Source string `json:"source,omitempty"`
 
 	// Usage compares each resource with the network's per-transaction
 	// limit, and warns when one is over the headroom threshold.
@@ -363,6 +376,7 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 	costs := make([]Cost, 0, req.Repeat)
 	footprints := make([]Footprint, 0, req.Repeat)
 	var result *SimulateResult
+	var lastResp protocol.SimulateTransactionResponse
 	for i := 0; i < req.Repeat; i++ {
 		resp, err := p.client.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{
 			Transaction: envelope,
@@ -375,6 +389,7 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		if err != nil {
 			return nil, err
 		}
+		lastResp = resp
 		// The last run is the one reported in full; the earlier runs only
 		// contribute to the spread. The call is deterministic in the
 		// success case, so they agree on everything the report shows.
@@ -388,6 +403,11 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 	result.Source = source
 	if result.Success {
 		p.addLimitsAndFees(ctx, req, result)
+	}
+	if req.Trace {
+		if err := p.addTrace(ctx, result, lastResp.EventsXDR); err != nil {
+			return nil, err
+		}
 	}
 	if typed.changed {
 		result.EncodedArgs = typed.args
@@ -540,6 +560,7 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 		result.Cost.WriteBytes = uint32(data.Resources.WriteBytes)
 		result.Cost.ResourceFee = int64(data.ResourceFee)
 		result.Footprint = describeFootprint(data.Resources.Footprint)
+		result.FootprintEntries = describeFootprintEntries(data.Resources.Footprint, req.ContractID)
 	}
 
 	if len(resp.Results) > 0 && resp.Results[0].ReturnValueXDR != nil {

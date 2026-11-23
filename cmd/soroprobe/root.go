@@ -90,8 +90,11 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 		newInspectCmd(opts),
 		newCheckCmd(opts),
 		newCompatCmd(opts),
+		newCompareCmd(opts),
 		newBalanceCmd(opts),
 		newLimitsCmd(opts),
+		newDiffCmd(opts),
+		newSweepCmd(opts),
 		newVerifyCmd(opts),
 		newServeCmd(opts),
 		newVersionCmd(),
@@ -106,7 +109,23 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	if err := o.applyFlagOverrides(cmd, &cfg); err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	o.cfg = cfg
+	return nil
+}
 
+// applyFlagOverrides applies every persistent flag the user actually set to a
+// resolved configuration.
+//
+// It is separate from resolve so that commands which build more than one
+// configuration — `compare` builds one per network — can give each the same
+// overrides without re-resolving the whole process configuration.
+func (o *options) applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) error {
 	flags := cmd.Flags()
 	if flags.Changed("rpc-url") {
 		cfg.RPCURL, _ = flags.GetString("rpc-url")
@@ -183,11 +202,6 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("base-fee") {
 		cfg.BaseFee, _ = flags.GetInt64("base-fee")
 	}
-
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	o.cfg = cfg
 	return nil
 }
 
@@ -195,10 +209,16 @@ func (o *options) resolve(cmd *cobra.Command) error {
 // fixture-backed factory through options.newProber; the default is the live
 // RPC-backed one.
 func (o *options) prober() (*probe.Prober, func(), error) {
+	return o.proberFor(o.cfg)
+}
+
+// proberFor builds a Prober from an explicit configuration. A multi-network
+// command calls it once per network.
+func (o *options) proberFor(cfg config.Config) (*probe.Prober, func(), error) {
 	if o.newProber != nil {
-		return o.newProber(o.cfg)
+		return o.newProber(cfg)
 	}
-	return newLiveProber(o.cfg, o.abiFromChain)
+	return newLiveProber(cfg, o.abiFromChain)
 }
 
 // newLiveProber builds a Prober over a live Stellar RPC client. abiFromChain

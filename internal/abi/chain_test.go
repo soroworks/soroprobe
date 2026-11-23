@@ -68,6 +68,50 @@ func TestChainSourceCodeErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseWasmEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		wasm    []byte
+		wantErr string
+	}{
+		{
+			name:    "empty input",
+			wasm:    nil,
+			wantErr: "invalid Wasm module",
+		},
+		{
+			name:    "module without custom sections",
+			wasm:    []byte{0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00},
+			wantErr: "no such custom section",
+		},
+		{
+			name: "section length exceeds module",
+			wasm: []byte{
+				0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00,
+				0x00, 0x02, 'x',
+			},
+			wantErr: "invalid Wasm section length",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			iface, err := abi.ParseWasm(tt.wasm)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, iface)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Empty(t, iface.Functions)
+			assert.Empty(t, iface.Types)
+		})
+	}
+}
+
 func TestParseMeta(t *testing.T) {
 	t.Parallel()
 
@@ -91,7 +135,51 @@ func TestParseMetaWithoutASectionIsEmptyNotAnError(t *testing.T) {
 	meta, err := abi.ParseMeta(abitest.Wasm(t, abitest.Fn("get", nil)))
 	require.NoError(t, err)
 	assert.Empty(t, meta)
+}
 
-	_, err = abi.ParseMeta([]byte("not wasm"))
-	require.Error(t, err)
+func TestParseMetaEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	truncatedMetaWasm := append(
+		[]byte{0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00, 0x00, 19, 14},
+		[]byte("contractmetav0")...,
+	)
+	truncatedMetaWasm = append(truncatedMetaWasm, []byte{0, 0, 0, 0}...)
+
+	tests := []struct {
+		name    string
+		wasm    []byte
+		want    map[string]string
+		wantErr string
+	}{
+		{
+			name:    "empty input",
+			wasm:    nil,
+			wantErr: "invalid Wasm module",
+		},
+		{
+			name: "empty key and value",
+			wasm: abitest.WasmWithMeta(t, nil, []abitest.Meta{{Key: "", Val: ""}}),
+			want: map[string]string{"": ""},
+		},
+		{
+			name:    "truncated metadata entry",
+			wasm:    truncatedMetaWasm,
+			wantErr: "decode contract metadata",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			meta, err := abi.ParseMeta(tt.wasm)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, meta)
+		})
+	}
 }

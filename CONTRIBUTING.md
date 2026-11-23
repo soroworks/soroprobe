@@ -66,6 +66,7 @@ seems to need persistence, please open an issue to discuss it before building.
 ```
 cmd/soroprobe     cobra CLI and output rendering
 internal/config   defaults, config file and environment resolution
+internal/integration  read-only clients for sibling services (SoroForge)
 internal/stellar  RPC client behind an interface, ledger keys, transaction building
   └── stellartest fixture-backed fake, plus the recorder that captures fixtures
 internal/scval    ScVal encode/decode behind an interface, with a type registry
