@@ -410,10 +410,13 @@ Combined health check, designed for CI.
 | `--key <spec>` | A contract data key to include in the TTL check. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Combined with `--key`. |
 | `--durability <d>` | Durability for `--key` lookups. |
+| `--from-soroforge <url>` | Read the contracts a [SoroForge](#checking-the-contracts-soroforge-tracks---from-soroforge) API tracks and check each. |
+| `--soroforge-token <token>` | Read-only SoroForge API token. Defaults to `SOROFORGE_API_TOKEN`. |
+| `--network <name>` | SoroForge network label for `--from-soroforge`. Defaults to the label for the configured passphrase. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
-Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, then
-`simulate`.
+Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, `wasm_hash` (when a
+recorded hash is given), any `data_ttl`, then `simulate`.
 
 **Exit codes:**
 
@@ -461,7 +464,8 @@ result 1 passed, 1 failed, 0 could not run
 ```
 
 Each entry takes `name` (defaults to the contract ID, and must be unique),
-`contract_id`, `function`, `args`, `data_keys`, `data_durability` and `timeout`.
+`contract_id`, `function`, `args`, `data_keys`, `data_durability`,
+`expected_wasm_hash` and `timeout`.
 Unknown keys are rejected, so a typo cannot silently drop a step. Checks run one
 at a time by default to stay inside public RPC rate limits; `--concurrency N`
 runs up to N checks at once for endpoints that allow it. Results remain in file
@@ -490,6 +494,47 @@ not a reason to break a build. Only `critical`, `expired` and `missing` fail.
 functions from the ledger, and guessing a name would produce a failure that
 looks like a broken contract but is really a broken guess. Without `--fn` the
 simulation step is honestly reported as `SKIP`.
+
+#### Checking the contracts SoroForge tracks: `--from-soroforge`
+
+A check file lists contracts by hand, so it drifts: a contract deployed last
+week is missing, and one upgraded last month still appears healthy. When a team
+deploys with [SoroForge](https://github.com/soroworks/soroforge), its API already
+knows which contracts exist on a network and which Wasm hash was live when each
+change was confirmed, so SoroProbe can read that list instead:
+
+```bash
+export SOROFORGE_API_TOKEN=...   # a read-scoped token is enough
+soroprobe check --from-soroforge http://localhost:8080 --network testnet
+```
+
+```
+  PASS   token   instance_ttl: live for 58912 more ledgers (~3.4 days, …)
+  FAIL   vault   wasm_hash: drift: the registry recorded 9c1e… but the deployed code is 3f2a…
+
+result 1 passed, 1 failed, 0 could not run
+```
+
+SoroProbe reads `GET /v1/contracts?network=…`, following `has_more` (and
+`next_offset` when present) until every page has been read. `--network` names
+the SoroForge network label; it defaults to the label for the configured
+passphrase (`testnet`, `public` or `futurenet`), and the RPC endpoint must serve
+that same network. The alias SoroForge records is the name in the report.
+
+Each contract gets the usual checks plus `wasm_hash`, which compares the hash
+SoroForge recorded with the one the contract is actually running. A mismatch
+fails the check and prints both hashes: the catalog says one build is live and
+the chain says another. Stellar Asset Contracts have no code entry, so there the
+step is `SKIP` rather than an invented comparison. The same comparison is
+available per entry in `--file` as `expected_wasm_hash`.
+
+The token only needs the read scope. `--soroforge-token` overrides
+`SOROFORGE_API_TOKEN`. Authentication failures (401/403), an unknown network
+(400), rate limiting (429), a broken page of results and any other registry
+failure are **exit code 2**: no check ran, and a build must not pass on that. An
+empty list is exit 2 as well, because it usually means the wrong `--network`.
+`--quiet`, `--json`, `--format`, `--report`, `--check-timeout` and
+`--concurrency` work exactly as they do with `--file`.
 
 #### Verifying a token interface: `--standard`
 
@@ -592,6 +637,89 @@ User-defined types are compared by structure, not by name, so renaming a type
 without changing its shape is not breaking, and struct fields are compared by
 name rather than position. Exit code 1 when anything is breaking; `--json`
 prints `{"old", "new", "breaking", "changes": [{"breaking", "subject", "detail"}]}`.
+
+### `soroprobe compare <contract-id> --testnet <profile> --mainnet <profile>`
+
+Compares the same contract on two configured networks, so a testnet
+deployment can be checked against mainnet before it ships.
+
+Each side's endpoint and passphrase come from a config profile. `--rpc-url`
+and `--network-passphrase` name exactly one network, so they cannot be used
+here; everything else — source account, thresholds, timeout — follows the usual
+precedence and is applied to both sides.
+
+```
+$ soroprobe compare CCLV… --testnet testnet --mainnet mainnet --fn decimals
+compare testnet vs mainnet
+
+contracts
+  testnet          CCLV77FY…
+  mainnet          CCLV77FY…
+
+wasm
+  testnet          8608bb30…
+  mainnet          8608bb30…
+  MATCH  the deployed Wasm is the same on both networks
+
+state entries
+  ENTRY              testnet                    mainnet                    VERDICT
+  instance           healthy (58912 ledgers)    warning (50210 ledgers)    DIFFERENT
+  code               healthy (24268 ledgers)    healthy (60110 ledgers)    MATCH
+
+read-only calls
+  CALL           testnet                    mainnet                    VERDICT
+  decimals       success, return 7          success, return 7          MATCH
+
+result MATCH  (1 other difference(s) highlighted above)
+```
+
+Three things are compared:
+
+- **Wasm.** Equal hashes mean the same build is deployed. Two Stellar Asset
+  Contracts count as a match, because the host implements both and there is no
+  Wasm entry to hash. This is the verdict the exit code reflects.
+- **State entry TTLs.** The instance, the code entry and any `--key` data
+  entries are read on both networks. Remaining ledger counts always differ
+  because the chains are at different heights, so a difference is highlighted
+  when the **health status** differs, not the raw count.
+- **Read-only calls.** `--fn` runs one call; `--calls <file>` runs several:
+
+  ```json
+  {"calls": [
+    {"name": "decimals", "function": "decimals"},
+    {"name": "symbol", "function": "symbol"}
+  ]}
+  ```
+
+  Each call's success and decoded return value are compared on both networks.
+  Unknown fields are rejected and call names must be unique.
+
+| Flag | Description |
+| --- | --- |
+| `--testnet <profile>` | Config profile for the first network. Required. |
+| `--mainnet <profile>` | Config profile for the second network. Required. |
+| `--testnet-contract <id>` | Contract id on the first network. Defaults to the positional id. |
+| `--mainnet-contract <id>` | Contract id on the second network. Defaults to the positional id. |
+| `--fn <name>` | Read-only function to simulate on both networks. |
+| `--arg <spec>` | Argument for `--fn`, in `type:value` form. Repeatable. |
+| `--calls <path>` | JSON file of calls to run on both networks (`-` reads stdin). |
+| `--key <spec>` | A data key whose TTL should be compared. Repeatable. |
+| `--key-file <path>` | A file listing data keys, combined with `--key`. |
+| `--durability <d>` | Durability for `--key` lookups: `persistent` (default) or `temporary`. |
+| `--format text\|json` | Output format. `--json` also selects JSON. |
+| `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
+
+**Exit codes:** 0 when the Wasm hashes match, 1 when they do not (including
+when one side is not deployed), and 2 when SoroProbe could not run. TTL and call
+differences are highlighted but do not change the exit code: the verdict is
+about the code being the same deployment. Both profiles must resolve to a
+different RPC endpoint and network passphrase, so a comparison cannot silently
+probe the same network twice.
+
+The positional contract address is used on both networks unless overridden,
+which suits a deterministic deployment: a contract's address is derived from
+its deployer and salt, so the same deployment usually lands at the same address
+on both chains.
 
 ### `soroprobe balance <token> <address>...`
 
@@ -696,6 +824,47 @@ This is a heuristic: a path does not prove every route through the function auth
 - A contract built for a newer protocol than the network runs is a FAIL: it cannot run until the network upgrades.
 - A pre-release build on mainnet is a WARN.
 - The step is skipped for Stellar Asset Contracts.
+### Comparing footprints: `simulate --compare <contract2>` and `soroprobe diff <a.json> <b.json>`
+
+`--compare` simulates the same call on a second contract, such as a new version of the same code. `diff` compares two saved `simulate --json` reports. Both print:
+
+- ledger entries only one side touches
+- entries that moved between read-only and read-write
+- the change in each resource
+
+Entries are described in human terms: the instance, the code by hash, and data entries with their decoded key and durability. The called contract is named `self`, so two versions line up entry for entry. `--json` output is sorted and stable for CI.
+
+### `soroprobe sweep <contract> <function>`
+
+Simulates one function across many argument sets and prints a table of resources per sample, to see how cost scales before a user hits a limit.
+
+Samples come from `--args-file` (a JSON array of argument arrays or `{label, args}` objects) or from `--template` with `--sizes`:
+
+```
+soroprobe sweep C... process --template 'vec:[{repeat:"u32:7"}]' --sizes 1..64:8
+```
+
+In a template, `{n}` is the size and `{repeat:SPEC}` repeats SPEC n times. Simulations run at most `--concurrency` (default 4) at a time. Each row is judged against the network's per-transaction limits, and the output names the largest sample, in the order given, that succeeds within them.
+
+### Call trees: `simulate --trace`
+
+Prints the cross-contract call tree rebuilt from the simulation's `fn_call` and `fn_return` diagnostic events:
+
+```
+call trace
+  CCLV… swap(amount: 10, min_out: 9)
+    CDLZ… transfer(10)
+      -> null
+    -> 9
+```
+
+Each call shows its contract, function, decoded arguments (named from the contract's interface where it can be read) and return value. A contract error appears at the frame that raised it. `--json` emits the tree as nested objects under `trace`.
+
+### Prebuilt envelopes: `simulate --envelope <base64>`
+
+Simulates a transaction envelope exactly as a wallet or dApp built it (`--envelope-file`, `-` for stdin, reads it from a file). The call is decoded, and named from the target contract's interface when available, and the result, cost, footprint and authorizations are reported as usual.
+
+An envelope with more than one operation, or with an operation that runs no contract, is rejected with an explanation.
 
 ### `soroprobe serve`
 
@@ -1016,6 +1185,7 @@ Precedence, lowest to highest: **defaults → top-level config file keys → pro
 | `CODE_WARN_LEDGERS`, `CODE_CRITICAL_LEDGERS` | `--code-warn-ledgers`, `--code-critical-ledgers` | global thresholds |
 | `DATA_WARN_LEDGERS`, `DATA_CRITICAL_LEDGERS` | `--data-warn-ledgers`, `--data-critical-ledgers` | global thresholds |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
+| `SOROFORGE_API_TOKEN` | `--soroforge-token` (on `check`) | unset — required by `--from-soroforge` |
 | `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` (then `./soroprobe.yaml`, `./soroprobe.yml`) if present |
 | `SOROPROBE_PROFILE` | `--profile` | unset |
 
@@ -1101,6 +1271,7 @@ never submitted. There is a test asserting the envelope carries no signatures.
 ```
 cmd/soroprobe     cobra CLI and output rendering
 internal/config   defaults, config file and environment resolution
+internal/integration  read-only clients for sibling services (SoroForge)
 internal/stellar  Stellar RPC client behind an interface, ledger keys, tx building
   └── stellartest fixture-backed fake + the recorder that captures fixtures
 internal/scval    ScVal encode/decode behind an interface, with a type registry

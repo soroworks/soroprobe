@@ -34,6 +34,11 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// ExpectedWASMHash, when set, is the hex Wasm hash a deployment registry
+	// recorded for this contract. The check compares it with the live code
+	// hash and reports drift, which is how `check --from-soroforge` proves the
+	// chain still runs what was deployed. Empty skips the comparison.
+	ExpectedWASMHash string `json:"expected_wasm_hash,omitempty" yaml:"expected_wasm_hash,omitempty"`
 	// Standard, when set, names a published interface (see abi.Standards)
 	// the contract's exported functions are verified against.
 	Standard string `json:"standard,omitempty" yaml:"standard,omitempty"`
@@ -126,6 +131,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&deployedStep{},
 		&instanceTTLStep{},
 		&codeTTLStep{},
+		&wasmHashStep{},
 		&dataTTLStep{},
 		&simulateStep{},
 		&expectStep{p: p},

@@ -47,13 +47,24 @@ func TestBalanceNeedsAHolder(t *testing.T) {
 
 func TestFormatUnits(t *testing.T) {
 	cases := []struct {
+		name     string
 		n        int64
 		decimals uint32
 		want     string
 	}{
-		{0, 7, "0"}, {1, 7, "0.0000001"}, {10_000_000, 7, "1"}, {-125, 2, "-1.25"}, {42, 0, "42"}, {5, 3, "0.005"},
+		{name: "zero", n: 0, decimals: 7, want: "0"},
+		{name: "smallest fraction", n: 1, decimals: 7, want: "0.0000001"},
+		{name: "whole unit", n: 10_000_000, decimals: 7, want: "1"},
+		{name: "negative fraction", n: -125, decimals: 2, want: "-1.25"},
+		{name: "no decimals", n: 42, decimals: 0, want: "42"},
+		{name: "leading zero fraction", n: 5, decimals: 3, want: "0.005"},
+		{name: "trailing zero fractional digits", n: 120, decimals: 2, want: "1.2"},
+		{name: "maximum int64", n: 9_223_372_036_854_775_807, decimals: 7, want: "922337203685.4775807"},
+		{name: "minimum int64", n: -9_223_372_036_854_775_808, decimals: 7, want: "-922337203685.4775808"},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, probe.FormatUnits(big.NewInt(c.n), c.decimals))
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, probe.FormatUnits(big.NewInt(c.n), c.decimals))
+		})
 	}
 }
