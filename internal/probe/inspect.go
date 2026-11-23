@@ -403,8 +403,13 @@ func (p *Prober) planInspect(req InspectRequest) (*inspectPlan, error) {
 		return nil, err
 	}
 	durability := req.DataDurability
-	if durability == "" {
+	switch durability {
+	case "":
 		durability = health.DurabilityPersistent
+	case health.DurabilityPersistent, health.DurabilityTemporary:
+		// valid
+	default:
+		return nil, fmt.Errorf("unknown data durability %q (want persistent or temporary)", durability)
 	}
 	instanceKey, err := stellar.EncodeKey(stellar.InstanceKey(contract))
 	if err != nil {
