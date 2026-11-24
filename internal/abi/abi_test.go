@@ -166,7 +166,7 @@ func TestSoroVaultInterface(t *testing.T) {
 		  "contract_id": "` + contract + `",
 		  "interface": {"functions": [{"name": "decimals", "inputs": [],
 		    "outputs": [{"kind": "u32", "display": "u32"}]}]}
-		}`))
+		}`)):
 	}))
 	defer srv.Close()
 
@@ -273,7 +273,7 @@ func TestNewSoroVaultEdgeCases(t *testing.T) {
 				var gotPath string
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					gotPath = r.URL.Path
-					_, _ = w.Write([]byte(`{"contract_id":"` + contract + `","interface":{"functions":[]}}`))
+					_, _ = w.Write([]byte(`{"contract_id":"` + contract + `","interface":{}}`))
 				}))
 				defer srv.Close()
 
@@ -312,5 +312,13 @@ func TestNetworkNameEdgeCases(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, abi.NetworkName(tc.passphrase))
 		})
+	}
+}
+
+func BenchmarkNetworkName(b *testing.B) {
+	b.ReportAllocs()
+	passphrase := "Test SDF Network ; September 2015"
+	for i := 0; i < b.N; i++ {
+		_ = abi.NetworkName(passphrase)
 	}
 }
