@@ -108,7 +108,7 @@ func TestInspectTTLBoundaryTable(t *testing.T) {
 
 			fake := stellartest.NewFake(t)
 			instanceKey := stellartest.InstanceKeyOf(t, stellartest.SACContract)
-			fake.SetTTL(t, instanceKey, uint32(int64(fake.LatestLedger)+tt.offset))
+			fake.SetTTL(t, instanceKey, uint32(int64(fake.LatestLedger)+tt.offset)) //nolint:gosec // G115: sum stays within ledger range
 
 			p := newProber(t, fake, health.DefaultThresholds)
 			result, err := p.Inspect(context.Background(), probe.InspectRequest{
