@@ -51,6 +51,15 @@ only one of the two would have looked fine.
 - [Design](#design)
 - [What SoroProbe deliberately does not do](#what-soroprobe-deliberately-does-not-do)
 
+The same map is available from the binary itself, so you can jump straight to
+the command you need without scrolling:
+
+```bash
+soroprobe --help          # every command, one line of description each
+soroprobe help check      # the full reference for one command
+soroprobe help simulate
+```
+
 ## Versions this targets
 
 Soroban's simulation and state model change between protocol versions, so the
@@ -59,10 +68,20 @@ memory. Verified **2026-08-07**:
 
 | Component | Version | Notes |
 | --- | --- | --- |
-| Go SDK | `github.com/stellar/go-stellar-sdk` v0.7.1 | The former `github.com/stellar/go` is **deprecated and archived**; the Go tool itself reports `module github.com/stellar/go is deprecated: Use github.com/stellar/go-stellar-sdk instead`. |
+| Go SDK | `github.com/stellar/go-stellar-sdk` v0.8.0 | The former `github.com/stellar/go` is **deprecated and archived**; the Go tool itself reports `module github.com/stellar/go is deprecated: Use github.com/stellar/go-stellar-sdk instead`. |
 | Go | 1.25 | Required by the SDK. `GOTOOLCHAIN=auto` lets an older local `go` fetch it. |
 | Stellar RPC | `simulateTransaction`, `getLedgerEntries`, `getLatestLedger` | Accessed through the SDK's `clients/rpcclient`. |
 | Network | Testnet, **protocol 27** | Ledger close time measured at 5.00s/ledger over 19 consecutive ledgers. |
+
+Check the two versions you can read locally against that table:
+
+```bash
+$ go version
+go version go1.25.0 linux/amd64
+
+$ grep 'stellar/go-stellar-sdk' go.mod
+	github.com/stellar/go-stellar-sdk v0.8.0
+```
 
 Two details that commonly trip up code written against older docs:
 
@@ -107,6 +126,20 @@ docker compose up
 the environment (or a `.env` file); the defaults target the public testnet, so
 the stack comes up with no configuration at all.
 
+Confirm the install works before relying on it — neither command needs a
+configuration or a secret key, and the second should exit **0**:
+
+```bash
+$ soroprobe version
+v0.2.0      # a `make build` prints the commit it was built from instead
+
+$ soroprobe check CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --fn decimals
+…
+result PASS
+$ echo $?
+0
+```
+
 If your local Go is older than 1.25, nothing needs to change: `GOTOOLCHAIN=auto`
 is Go's default and will fetch the right toolchain on first build.
 
@@ -142,6 +175,18 @@ footprint
 
 simulated against ledger 4014077
 ```
+
+**Pass an argument:**
+
+```bash
+soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC balance \
+  addr:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+```
+
+Every argument takes the same `type:value` form, so `addr:` is encoded as a
+Soroban `Address`. This placeholder account holds none of the asset, so the
+returned balance is `0`. All the supported types are under
+[Argument encoding](#argument-encoding).
 
 **Inspect its state health:**
 
@@ -186,6 +231,25 @@ liveUntilLedgerSeq >= currentLedgerSeq
 
 so the remaining lifetime, in ledgers, is `liveUntilLedgerSeq - currentLedgerSeq`.
 Zero means it expires with the current ledger. Negative means it already has.
+
+**Example.** An abbreviated `getLedgerEntries` response for an instance entry:
+
+```json
+{
+  "entries": [
+    {
+      "liveUntilLedgerSeq": 4073187,
+      "lastModifiedLedgerSeq": 4014103
+    }
+  ],
+  "latestLedger": 4014275
+}
+```
+
+At ledger 4014275 that entry has `4073187 - 4014275 = 58912` ledgers left
+(about 3.4 days at five seconds per ledger). That is below the default warning
+threshold of 120960 and above the critical one of 17280, so it is reported as
+**warning**: still live, but due for an extension.
 
 **What expiry costs depends on durability, and the difference matters:**
 
@@ -243,6 +307,18 @@ entries, RPC returns a `restorePreamble`. SoroProbe surfaces this as
 restoration; it does not perform one.
 
 ## CLI reference
+
+Every command prints its own arguments, flags and the [global flags](#global-flags)
+with `--help`. Reading help never contacts the network:
+
+```
+$ soroprobe inspect --help
+Read a contract's instance and code entries, and report how close each is to
+expiring.
+…
+Usage:
+  soroprobe inspect <contract-id> [flags]
+```
 
 ### `soroprobe simulate <contract-id> <function> [args...]` or `simulate --file <calls.json>`
 
@@ -849,6 +925,24 @@ entries, and expired entries are dropped on read.
 `--log-level`, `--log-format`, `--timeout`, `--warn-ledgers`,
 `--critical-ledgers`, `--sorovault-url`.
 
+They apply to every command and can go before or after it. This inspects the
+testnet native-asset contract against an explicit endpoint, with a 30-second
+RPC timeout and a wider warning threshold:
+
+```bash
+soroprobe inspect CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --rpc-url https://soroban-testnet.stellar.org \
+  --network-passphrase "Test SDF Network ; September 2015" \
+  --timeout 30s --warn-ledgers 200000 --json | jq '.instance.thresholds'
+```
+
+```json
+{
+  "warn": 200000,
+  "critical": 17280
+}
+```
+
 ## Argument encoding
 
 Arguments use a `type:value` form:
@@ -874,6 +968,33 @@ soroprobe simulate CDLZ... transfer \
 | `vec` | `vec:["u32:1","u32:2"]`, `vec:[1, 2]` |
 | `map` | `map:[["sym:a","u32:1"],["sym:b","u32:2"]]` |
 
+A runnable version against the public testnet: it simulates a transfer of
+10000000 base units from the testnet friendbot account (funded, so the call
+succeeds) to the native-asset contract. Nothing is submitted. The
+`authorizations` section prints the arguments as they were encoded:
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10000000
+…
+SUCCESS  the call would succeed
+…
+authorizations
+  GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR
+    CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC::transfer("GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR", "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC", "10000000")
+…
+```
+
+An argument that does not parse is rejected before any request is sent, and
+the error names its position (counted from 0):
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC decimals u32:abc
+error: arg 0: argument "u32:abc": expected a base-10 integer, got "abc"
+```
+
 ### Token amounts
 
 Token functions take amounts in **base units**, so 10 XLM-equivalent of a
@@ -898,6 +1019,28 @@ integer arithmetic, never with floating point, so no amount is ever off by a
 rounding error. An amount with more fractional digits than the token has
 decimals — `i128:10.12345@2` — is **rejected** rather than rounded, because a
 rounded amount is a different amount. Negative amounts and zero work.
+
+To see the conversion, simulate a 10.5-token transfer of the testnet native
+asset (7 decimals) and read the encoded amount back from the authorization it
+requires (`auth` in `--json` output):
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10.5@7 --json | jq -r '.auth[0].root_invocation.args[2]'
+105000000
+```
+
+Too many fractional digits fail before anything is simulated:
+
+```
+$ soroprobe simulate CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC transfer \
+    addr:GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR \
+    addr:CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+    i128:10.12345@2
+error: arg 2: argument "i128:10.12345@2": amount "10.12345@2" has 5 fractional digits but the token has 2 decimals, so it cannot be represented exactly
+```
 
 The scale is part of the argument, so it needs a type prefix: a bare `10.5@7`
 is not an amount, it is a string.

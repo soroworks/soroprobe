@@ -118,6 +118,21 @@ Nothing outside `internal/scval` needs to change.
    you if you forget.
 4. If it needs fixture data, add it to the recorder and run `make fixtures`.
 
+For example, the `GetLatestLedger` forwarding method in `RPCClient` looks like:
+
+```go
+func (c *RPCClient) GetLatestLedger(ctx context.Context) (protocol.GetLatestLedgerResponse, error) {
+    ctx, cancel := c.withTimeout(ctx)
+    defer cancel()
+
+    resp, err := c.inner.GetLatestLedger(ctx)
+    if err != nil {
+        return resp, fmt.Errorf("getLatestLedger: %w", err)
+    }
+    return resp, nil
+}
+```
+
 ### Adding or recording a fixture
 
 When adding a feature or test case that needs new RPC responses (for example, a
@@ -147,6 +162,17 @@ Fixtures are pretty-printed and stable so diffs remain clean.
 `internal/health` is self-contained and has no dependency on RPC types, which
 makes it the easiest package to work in. Statuses are ordered by `Severity()`;
 if you add one, place it in that ordering and extend the ordering test.
+
+For example, thresholds are measured in ledgers; this classifies an entry with
+100 ledgers remaining as critical:
+
+```go
+currentLedger := uint32(1_000_000)
+liveUntil := currentLedger + 100
+thresholds := health.Thresholds{Warn: 1_000, Critical: 100}
+ttl := health.Evaluate(&liveUntil, currentLedger, health.DurabilityPersistent, thresholds)
+fmt.Println(ttl.Status) // critical
+```
 
 ### Re-verifying after a protocol upgrade
 
@@ -190,4 +216,18 @@ it directly.
 ## License
 
 By contributing you agree that your contributions are licensed under Apache-2.0,
-the same license as the project.
+the same license as the project. There is no CLA to sign and no per-file header
+to add — [LICENSE](LICENSE) covers the whole repository. If you do want to mark
+a new file, use the standard SPDX identifier:
+
+```go
+// SPDX-License-Identifier: Apache-2.0
+```
+
+The same applies to anything you add: a new dependency has to be Apache-2.0
+compatible, and its license is in the module cache after `go mod download`:
+
+```bash
+$ head -1 "$(go mod download -json github.com/stretchr/testify | jq -r '.Dir')/LICENSE"
+MIT License
+```
