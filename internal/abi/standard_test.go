@@ -70,6 +70,13 @@ func TestLookupStandard(t *testing.T) {
 	assert.Contains(t, err.Error(), "sep41")
 }
 
+func BenchmarkLookupStandard(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = abi.LookupStandard("sep41")
+	}
+}
+
 func TestVerifyAcceptsAConformingToken(t *testing.T) {
 	t.Parallel()
 
