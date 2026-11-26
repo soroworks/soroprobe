@@ -172,6 +172,50 @@ func TestCheckBatchRejectsMalformedBatches(t *testing.T) {
 	}
 }
 
+func TestGetLedgerEntriesEdgeCases(t *testing.T) {
+	t.Parallel()
+	fake := stellartest.NewFake(t)
+	p := newProber(t, fake, health.DefaultThresholds)
+
+	maxChecks := make([]probe.NamedCheck, probe.MaxBatchChecks)
+	for i := range maxChecks {
+		maxChecks[i] = named(fmt.Sprintf("check-%d", i), stellartest.SACContract, "decimals")
+	}
+
+	table := []struct {
+		name        string
+		req         probe.BatchRequest
+		expectedErr error
+	}{
+		{
+			name:        "empty input",
+			req:        probe.BatchRequest{Checks: nil},
+			expectedErr: probe.ErrInvalidBatch,
+		},
+		{
+			name:        "boundary max checks",
+			req:        probe.BatchRequest{Checks: maxChecks},
+			expectedErr: nil,
+		},
+		{
+			name:        "invalid negative concurrency",
+			req:        probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}, Concurrency: -1},
+			expectedErr: probe.ErrInvalidBatch,
+		},
+	}
+
+	for _, tc := range table {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.CheckBatch(context.Background(), tc.req)
+			if tc.expectedErr != nil {
+				assert.ErrorIs(t, err, tc.expectedErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestCheckBatchStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	fake := stellartest.NewFake(t)
