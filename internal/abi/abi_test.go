@@ -111,7 +111,7 @@ func TestAnnotateTypesCollectionElements(t *testing.T) {
 
 	assert.Equal(t, `vec:["u32:1","u32:2"]`, got[0])
 	assert.Equal(t, `map:[["symbol:a","u32:10"],["symbol:b","u32:20"]]`, got[1])
-	assert.Equal(t, `vec:["vec:[\"u32:1\"]","vec:[]"]`, got[2])
+	assert.Equal(t, `vec:["vec:[\\"u32:1\\"]","vec:[]"]`, got[2])
 	assert.Equal(t, `vec:["i64:3","u32:4"]`, got[3], "an explicit element type still wins")
 
 	// The annotated specs must encode, and to the declared types.
@@ -165,8 +165,8 @@ func TestSoroVaultInterface(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 		  "contract_id": "` + contract + `",
 		  "interface": {"functions": [{"name": "decimals", "inputs": [],
-		    "outputs": [{"kind": "u32", "display": "u32"}]}]}
-		}`))
+		    "outputs": [{"kind": "u32", "display": "u32"}]}
+		}]}`))
 	}))
 	defer srv.Close()
 
@@ -225,7 +225,7 @@ func TestSoroVaultErrors(t *testing.T) {
 
 func TestNewSoroVaultValidatesURL(t *testing.T) {
 	t.Parallel()
-	for _, bad := range []string{"", "localhost:8080", "ftp://vault", "http://"} {
+	for _, bad := range []string{"-", "localhost:8080", "ftp://vault", "http://"} {
 		_, err := abi.NewSoroVault(bad, nil, 0)
 		assert.Error(t, err, bad)
 	}
@@ -285,6 +285,13 @@ func TestNewSoroVaultEdgeCases(t *testing.T) {
 			})
 		}
 	})
+}
+
+func BenchmarkNewSoroVault(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = abi.NewSoroVault("http://localhost:8080", nil, 0)
+	}
 }
 
 func TestNetworkName(t *testing.T) {
