@@ -1,579 +1,358 @@
 package abi
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"sort"
 	"strings"
-
-	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
-	"github.com/stellar/go-stellar-sdk/xdr"
-
-	"github.com/soroworks/soroprobe/internal/stellar"
 )
 
-// Spec holds a contract's full parsed ScSpecEntry declarations — functions,
-// structs, unions, enums, and error enums — for structural compatibility
-// comparison.
-type Spec struct {
-	Functions  map[string]xdr.ScSpecFunctionV0
-	Structs    map[string]xdr.ScSpecUdtStructV0
-	Unions     map[string]xdr.ScSpecUdtUnionV0
-	Enums      map[string]xdr.ScSpecUdtEnumV0
-	ErrorEnums map[string]xdr.ScSpecUdtErrorEnumV0
-}
-
-// Change describes one interface difference between an old and a new contract
-// specification.
+// Change is one difference between two versions of a contract interface.
 type Change struct {
-	Breaking bool   `json:"breaking"`
-	Category string `json:"category"`
-	Symbol   string `json:"symbol"`
-	Summary  string `json:"summary"`
+	// Breaking is true when a caller written against the old interface can
+	// fail against the new one.
+	Breaking bool `json:"breaking"`
+	// Subject is what changed: "fn transfer" or "type Config".
+	Subject string `json:"subject"`
+	// Detail says how, quoting the old and new forms.
+	Detail string `json:"detail"`
 }
 
-// CompatReport summarises the compatibility comparison between two contract
-// specifications.
-type CompatReport struct {
-	Compatible  bool     `json:"compatible"`
-	Breaking    []Change `json:"breaking"`
-	NonBreaking []Change `json:"non_breaking"`
-}
+// Compat compares an old interface with its replacement and lists every
+// difference, breaking or not, in a stable order: functions in the order the
+// old interface declares them, then added functions, then user-defined types.
+//
+// Breaking: a removed function, a changed argument count or argument type, a
+// changed return type, a removed or retyped struct field, a struct field that
+// is added (old callers cannot build the new struct), a removed enum or union
+// case, and a case whose value or payload changed. Not breaking: an added
+// function, a renamed argument (argument names are not part of the Wasm ABI)
+// and an added enum or union case.
+//
+// User-defined types are compared by structure, not by name. A struct's fields
+// are sorted by name before comparing, because Soroban stores a struct as a map
+// keyed by field name, so declaration order is not part of its identity. Two
+// types with the same structure under different names are therefore equal,
+// which keeps a pure rename from being reported as breaking.
+func Compat(oldIface, newIface *Interface) []Change {
+	c := comparer{old: indexTypes(oldIface), new: indexTypes(newIface)}
 
-// ParseWasmSpec extracts and decodes the contractspecv0 custom section of a
-// Wasm module into a Spec.
-func ParseWasmSpec(wasm []byte) (*Spec, error) {
-	section, err := customSection(wasm, contractSpecSection)
-	if err != nil {
-		return nil, err
+	var changes []Change
+	newFns := make(map[string]*Function, len(newIface.Functions))
+	for i := range newIface.Functions {
+		newFns[newIface.Functions[i].Name] = &newIface.Functions[i]
 	}
-	return ParseSpecSection(section)
-}
-
-// ParseSpecSection decodes a raw contractspecv0 stream of ScSpecEntry values.
-func ParseSpecSection(section []byte) (*Spec, error) {
-	reader := bytes.NewReader(section)
-	spec := &Spec{
-		Functions:  make(map[string]xdr.ScSpecFunctionV0),
-		Structs:    make(map[string]xdr.ScSpecUdtStructV0),
-		Unions:     make(map[string]xdr.ScSpecUdtUnionV0),
-		Enums:      make(map[string]xdr.ScSpecUdtEnumV0),
-		ErrorEnums: make(map[string]xdr.ScSpecUdtErrorEnumV0),
-	}
-
-	for reader.Len() > 0 {
-		var entry xdr.ScSpecEntry
-		if _, err := xdr.Unmarshal(reader, &entry); err != nil {
-			return nil, fmt.Errorf("decode contract spec: %w", err)
+	oldFns := make(map[string]bool, len(oldIface.Functions))
+	for i := range oldIface.Functions {
+		oldFn := &oldIface.Functions[i]
+		oldFns[oldFn.Name] = true
+		newFn, ok := newFns[oldFn.Name]
+		if !ok {
+			changes = append(changes, Change{Breaking: true, Subject: "fn " + oldFn.Name, Detail: "function removed: " + oldFn.Signature()})
+			continue
 		}
-		switch entry.Kind {
-		case xdr.ScSpecEntryKindScSpecEntryFunctionV0:
-			fn := entry.MustFunctionV0()
-			spec.Functions[string(fn.Name)] = fn
-		case xdr.ScSpecEntryKindScSpecEntryUdtStructV0:
-			st := entry.MustUdtStructV0()
-			spec.Structs[st.Name] = st
-		case xdr.ScSpecEntryKindScSpecEntryUdtUnionV0:
-			un := entry.MustUdtUnionV0()
-			spec.Unions[un.Name] = un
-		case xdr.ScSpecEntryKindScSpecEntryUdtEnumV0:
-			en := entry.MustUdtEnumV0()
-			spec.Enums[en.Name] = en
-		case xdr.ScSpecEntryKindScSpecEntryUdtErrorEnumV0:
-			er := entry.MustUdtErrorEnumV0()
-			spec.ErrorEnums[er.Name] = er
+		changes = append(changes, c.diffFunction(oldFn, newFn)...)
+	}
+	for i := range newIface.Functions {
+		if fn := &newIface.Functions[i]; !oldFns[fn.Name] {
+			changes = append(changes, Change{Subject: "fn " + fn.Name, Detail: "function added: " + fn.Signature()})
 		}
 	}
-	return spec, nil
+
+	for _, oldType := range oldIface.Types {
+		changes = append(changes, c.diffType(oldType)...)
+	}
+	return changes
 }
 
-// FetchChainSpec fetches a deployed contract's Wasm from the network and parses
-// its contractspecv0 section into a Spec.
-func FetchChainSpec(ctx context.Context, client stellar.Client, contractID string) (*Spec, error) {
-	contract, err := stellar.ParseContractID(contractID)
-	if err != nil {
-		return nil, err
+// HasBreaking reports whether any change is breaking.
+func HasBreaking(changes []Change) bool {
+	for _, c := range changes {
+		if c.Breaking {
+			return true
+		}
 	}
-	instanceKey, err := stellar.EncodeKey(stellar.InstanceKey(contract))
-	if err != nil {
-		return nil, err
+	return false
+}
+
+type comparer struct {
+	old, new map[string]UDT
+}
+
+func indexTypes(iface *Interface) map[string]UDT {
+	out := make(map[string]UDT, len(iface.Types))
+	for _, t := range iface.Types {
+		out[t.Name] = t
 	}
-	instanceResponse, err := client.GetLedgerEntries(ctx, protocol.GetLedgerEntriesRequest{Keys: []string{instanceKey}})
-	if err != nil {
-		return nil, err
+	return out
+}
+
+func (c comparer) diffFunction(oldFn, newFn *Function) []Change {
+	subject := "fn " + oldFn.Name
+	var changes []Change
+
+	if len(oldFn.Inputs) != len(newFn.Inputs) {
+		changes = append(changes, Change{
+			Breaking: true, Subject: subject,
+			Detail: fmt.Sprintf("takes %d argument(s), was %d: %s", len(newFn.Inputs), len(oldFn.Inputs), newFn.Signature()),
+		})
+	} else {
+		for i, oldIn := range oldFn.Inputs {
+			newIn := newFn.Inputs[i]
+			switch {
+			case !c.sameType(oldIn.Type, newIn.Type):
+				changes = append(changes, Change{
+					Breaking: true, Subject: subject,
+					Detail: fmt.Sprintf("argument %d (%s) type changed from %s to %s", i+1, oldIn.Name, oldIn.Type.Display, newIn.Type.Display),
+				})
+			case oldIn.Name != newIn.Name:
+				changes = append(changes, Change{
+					Subject: subject,
+					Detail:  fmt.Sprintf("argument %d renamed from %s to %s", i+1, oldIn.Name, newIn.Name),
+				})
+			}
+		}
 	}
-	if len(instanceResponse.Entries) == 0 {
-		return nil, ErrUnknownContract
+
+	oldOut, newOut := returnType(oldFn), returnType(newFn)
+	if !c.sameType(oldOut, newOut) {
+		changes = append(changes, Change{
+			Breaking: true, Subject: subject,
+			Detail: fmt.Sprintf("return type changed from %s to %s", oldOut.Display, newOut.Display),
+		})
 	}
-	instanceData, err := stellar.DecodeEntryData(instanceResponse.Entries[0].DataXDR)
-	if err != nil {
-		return nil, fmt.Errorf("decode contract instance: %w", err)
+	return changes
+}
+
+func returnType(fn *Function) Type {
+	if len(fn.Outputs) == 0 {
+		return Type{Kind: "void", Display: "void"}
 	}
-	if instanceData.ContractData == nil {
-		return nil, fmt.Errorf("contract instance entry is not contract data")
-	}
-	instance, ok := instanceData.ContractData.Val.GetInstance()
+	return fn.Outputs[0]
+}
+
+func (c comparer) diffType(oldType UDT) []Change {
+	subject := "type " + oldType.Name
+	newType, ok := c.new[oldType.Name]
 	if !ok {
-		return nil, fmt.Errorf("contract instance entry does not hold an instance")
+		// A pure rename keeps the structure, so a type with an identical
+		// shape under another name means nothing was lost.
+		want := canonUDT(oldType, c.old, map[string]bool{})
+		for _, candidate := range c.new {
+			if canonUDT(candidate, c.new, map[string]bool{}) == want {
+				return nil
+			}
+		}
+		return []Change{{Breaking: true, Subject: subject, Detail: "type removed"}}
 	}
-	if instance.Executable.Type == xdr.ContractExecutableTypeContractExecutableStellarAsset {
-		return nil, ErrNoWasm
+	if oldType.Kind != newType.Kind {
+		return []Change{{Breaking: true, Subject: subject, Detail: fmt.Sprintf("changed from a %s to a %s", oldType.Kind, newType.Kind)}}
 	}
-	if instance.Executable.Type != xdr.ContractExecutableTypeContractExecutableWasm || instance.Executable.WasmHash == nil {
-		return nil, fmt.Errorf("contract executable %s has no Wasm hash", instance.Executable.Type)
+	if oldType.Kind == UDTStruct {
+		return c.diffStruct(subject, oldType, newType)
 	}
-
-	hash := fmt.Sprintf("%x", instance.Executable.WasmHash[:])
-	codeKey, err := stellar.EncodeKey(stellar.CodeKey(*instance.Executable.WasmHash))
-	if err != nil {
-		return nil, err
-	}
-	codeResponse, err := client.GetLedgerEntries(ctx, protocol.GetLedgerEntriesRequest{Keys: []string{codeKey}})
-	if err != nil {
-		return nil, err
-	}
-	if len(codeResponse.Entries) == 0 {
-		return nil, fmt.Errorf("contract Wasm code %s was not found on ledger", hash)
-	}
-	codeData, err := stellar.DecodeEntryData(codeResponse.Entries[0].DataXDR)
-	if err != nil {
-		return nil, fmt.Errorf("decode contract Wasm entry: %w", err)
-	}
-	if codeData.ContractCode == nil {
-		return nil, fmt.Errorf("contract code entry does not contain Wasm")
-	}
-	return ParseWasmSpec(codeData.ContractCode.Code)
+	return c.diffCases(subject, oldType, newType)
 }
 
-// CompareSpecs compares oldSpec and newSpec structurally, returning all
-// breaking and non-breaking changes in a deterministic order.
-func CompareSpecs(oldSpec, newSpec *Spec) CompatReport {
-	report := CompatReport{
-		Breaking:    []Change{},
-		NonBreaking: []Change{},
+func (c comparer) diffStruct(subject string, oldType, newType UDT) []Change {
+	var changes []Change
+	newFields := make(map[string]Param, len(newType.Fields))
+	for _, f := range newType.Fields {
+		newFields[f.Name] = f
 	}
-
-	addBreaking := func(category, symbol, summary string) {
-		report.Breaking = append(report.Breaking, Change{
-			Breaking: true,
-			Category: category,
-			Symbol:   symbol,
-			Summary:  summary,
-		})
-	}
-	addNonBreaking := func(category, symbol, summary string) {
-		report.NonBreaking = append(report.NonBreaking, Change{
-			Breaking: false,
-			Category: category,
-			Symbol:   symbol,
-			Summary:  summary,
-		})
-	}
-
-	// 1. Compare top-level user-defined types shared between old and new.
-	compareUDTs(oldSpec, newSpec, addBreaking, addNonBreaking)
-
-	// 2. Compare functions (including structural comparison of argument and
-	// return types so a changed UDT referenced by a function is caught even
-	// if its type name changed or stayed the same).
-	for _, name := range sortedMapKeys(oldSpec.Functions) {
-		oldFn := oldSpec.Functions[name]
-		newFn, exists := newSpec.Functions[name]
-		if !exists {
-			addBreaking("function", name, fmt.Sprintf("function %s was removed", formatSpecFn(oldFn)))
-			continue
-		}
-
-		if len(oldFn.Inputs) != len(newFn.Inputs) {
-			addBreaking("function", name, fmt.Sprintf(
-				"function %s changed parameter count from %d to %d",
-				name, len(oldFn.Inputs), len(newFn.Inputs)))
-		} else {
-			for i := range oldFn.Inputs {
-				oldParam := oldFn.Inputs[i]
-				newParam := newFn.Inputs[i]
-				if oldParam.Name != newParam.Name {
-					addBreaking("function", name, fmt.Sprintf(
-						"function %s parameter %d renamed from %q to %q",
-						name, i+1, oldParam.Name, newParam.Name))
-				}
-				if reason := diffTypeStructural(oldSpec, newSpec, oldParam.Type, newParam.Type, make(map[string]bool)); reason != "" {
-					addBreaking("function", name, fmt.Sprintf(
-						"function %s parameter %q changed type: %s",
-						name, oldParam.Name, reason))
-				}
-			}
-		}
-
-		oldOut := outputTypeOrVoid(oldFn.Outputs)
-		newOut := outputTypeOrVoid(newFn.Outputs)
-		if reason := diffTypeStructural(oldSpec, newSpec, oldOut, newOut, make(map[string]bool)); reason != "" {
-			addBreaking("function", name, fmt.Sprintf(
-				"function %s return type changed: %s",
-				name, reason))
+	oldFields := make(map[string]bool, len(oldType.Fields))
+	for _, f := range sortedParams(oldType.Fields) {
+		oldFields[f.Name] = true
+		nf, ok := newFields[f.Name]
+		switch {
+		case !ok:
+			changes = append(changes, Change{Breaking: true, Subject: subject, Detail: fmt.Sprintf("field %s removed", f.Name)})
+		case !c.sameType(f.Type, nf.Type):
+			changes = append(changes, Change{
+				Breaking: true, Subject: subject,
+				Detail: fmt.Sprintf("field %s type changed from %s to %s", f.Name, f.Type.Display, nf.Type.Display),
+			})
 		}
 	}
-
-	for _, name := range sortedMapKeys(newSpec.Functions) {
-		if _, exists := oldSpec.Functions[name]; !exists {
-			newFn := newSpec.Functions[name]
-			addNonBreaking("function", name, fmt.Sprintf("function %s was added", formatSpecFn(newFn)))
+	for _, f := range sortedParams(newType.Fields) {
+		if !oldFields[f.Name] {
+			changes = append(changes, Change{Breaking: true, Subject: subject, Detail: fmt.Sprintf("field %s (%s) added", f.Name, f.Type.Display)})
 		}
 	}
-
-	report.Compatible = len(report.Breaking) == 0
-	return report
+	return changes
 }
 
-func compareUDTs(oldSpec, newSpec *Spec, addBreaking, addNonBreaking func(category, symbol, summary string)) {
-	for _, name := range sortedMapKeys(oldSpec.Structs) {
-		oldSt := oldSpec.Structs[name]
-		newSt, ok := newSpec.Structs[name]
-		if !ok {
-			if newSpec.hasUDT(name) {
-				addBreaking("type", name, fmt.Sprintf("type %s changed kind from struct", name))
-			} else {
-				addBreaking("type", name, fmt.Sprintf("struct %s was removed", name))
-			}
-			continue
-		}
-		if reason := diffStruct(oldSpec, newSpec, oldSt, newSt, make(map[string]bool)); reason != "" {
-			addBreaking("type", name, fmt.Sprintf("struct %s changed: %s", name, reason))
+func (c comparer) diffCases(subject string, oldType, newType UDT) []Change {
+	var changes []Change
+	newCases := make(map[string]Case, len(newType.Cases))
+	for _, k := range newType.Cases {
+		newCases[k.Name] = k
+	}
+	oldCases := make(map[string]bool, len(oldType.Cases))
+	for _, k := range oldType.Cases {
+		oldCases[k.Name] = true
+		nk, ok := newCases[k.Name]
+		switch {
+		case !ok:
+			changes = append(changes, Change{Breaking: true, Subject: subject, Detail: fmt.Sprintf("case %s removed", k.Name)})
+		case oldType.Kind != UDTUnion && k.Value != nk.Value:
+			changes = append(changes, Change{
+				Breaking: true, Subject: subject,
+				Detail: fmt.Sprintf("case %s value changed from %d to %d", k.Name, k.Value, nk.Value),
+			})
+		case oldType.Kind == UDTUnion && !c.samePayload(k.Payload, nk.Payload):
+			changes = append(changes, Change{
+				Breaking: true, Subject: subject,
+				Detail: fmt.Sprintf("case %s payload changed from (%s) to (%s)", k.Name, displays(k.Payload), displays(nk.Payload)),
+			})
 		}
 	}
-	for _, name := range sortedMapKeys(newSpec.Structs) {
-		if !oldSpec.hasUDT(name) {
-			addNonBreaking("type", name, fmt.Sprintf("struct %s was added", name))
+	for _, k := range newType.Cases {
+		if !oldCases[k.Name] {
+			changes = append(changes, Change{Subject: subject, Detail: fmt.Sprintf("case %s added", k.Name)})
 		}
 	}
-
-	for _, name := range sortedMapKeys(oldSpec.Unions) {
-		oldUn := oldSpec.Unions[name]
-		newUn, ok := newSpec.Unions[name]
-		if !ok {
-			if newSpec.hasUDT(name) {
-				addBreaking("type", name, fmt.Sprintf("type %s changed kind from union", name))
-			} else {
-				addBreaking("type", name, fmt.Sprintf("union %s was removed", name))
-			}
-			continue
-		}
-		if reason := diffUnion(oldSpec, newSpec, oldUn, newUn, make(map[string]bool)); reason != "" {
-			addBreaking("type", name, fmt.Sprintf("union %s changed: %s", name, reason))
-		}
-	}
-	for _, name := range sortedMapKeys(newSpec.Unions) {
-		if !oldSpec.hasUDT(name) {
-			addNonBreaking("type", name, fmt.Sprintf("union %s was added", name))
-		}
-	}
-
-	for _, name := range sortedMapKeys(oldSpec.Enums) {
-		oldEn := oldSpec.Enums[name]
-		newEn, ok := newSpec.Enums[name]
-		if !ok {
-			if newSpec.hasUDT(name) {
-				addBreaking("type", name, fmt.Sprintf("type %s changed kind from enum", name))
-			} else {
-				addBreaking("type", name, fmt.Sprintf("enum %s was removed", name))
-			}
-			continue
-		}
-		breaking, added := diffEnumCases(oldEn.Cases, newEn.Cases)
-		if breaking != "" {
-			addBreaking("type", name, fmt.Sprintf("enum %s changed: %s", name, breaking))
-		}
-		for _, c := range added {
-			addNonBreaking("type", name, fmt.Sprintf("enum %s added case %s = %d", name, c.Name, c.Value))
-		}
-	}
-	for _, name := range sortedMapKeys(newSpec.Enums) {
-		if !oldSpec.hasUDT(name) {
-			addNonBreaking("type", name, fmt.Sprintf("enum %s was added", name))
-		}
-	}
-
-	for _, name := range sortedMapKeys(oldSpec.ErrorEnums) {
-		oldEr := oldSpec.ErrorEnums[name]
-		newEr, ok := newSpec.ErrorEnums[name]
-		if !ok {
-			if newSpec.hasUDT(name) {
-				addBreaking("type", name, fmt.Sprintf("type %s changed kind from error enum", name))
-			} else {
-				addBreaking("type", name, fmt.Sprintf("error enum %s was removed", name))
-			}
-			continue
-		}
-		breaking, added := diffErrorEnumCases(oldEr.Cases, newEr.Cases)
-		if breaking != "" {
-			addBreaking("type", name, fmt.Sprintf("error enum %s changed: %s", name, breaking))
-		}
-		for _, c := range added {
-			addNonBreaking("type", name, fmt.Sprintf("error enum %s added case %s = %d", name, c.Name, c.Value))
-		}
-	}
-	for _, name := range sortedMapKeys(newSpec.ErrorEnums) {
-		if !oldSpec.hasUDT(name) {
-			addNonBreaking("type", name, fmt.Sprintf("error enum %s was added", name))
-		}
-	}
+	return changes
 }
 
-func (s *Spec) hasUDT(name string) bool {
-	_, isStruct := s.Structs[name]
-	_, isUnion := s.Unions[name]
-	_, isEnum := s.Enums[name]
-	_, isErrEnum := s.ErrorEnums[name]
-	return isStruct || isUnion || isEnum || isErrEnum
+func displays(types []Type) string {
+	names := make([]string, len(types))
+	for i, t := range types {
+		names[i] = t.Display
+	}
+	return strings.Join(names, ", ")
 }
 
-// diffTypeStructural compares oldDef and newDef structurally, dereferencing
-// user-defined types across oldSpec and newSpec so that two UDTs with identical
-// structure are considered compatible and a UDT whose underlying fields changed
-// is flagged as incompatible.
-func diffTypeStructural(oldSpec, newSpec *Spec, oldDef, newDef xdr.ScSpecTypeDef, visited map[string]bool) string {
-	if oldDef.Type != newDef.Type {
-		return fmt.Sprintf("%s -> %s", specType(oldDef).Display, specType(newDef).Display)
-	}
+func sortedParams(params []Param) []Param {
+	out := append([]Param(nil), params...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
 
-	switch oldDef.Type {
-	case xdr.ScSpecTypeScSpecTypeOption:
-		if r := diffTypeStructural(oldSpec, newSpec, oldDef.MustOption().ValueType, newDef.MustOption().ValueType, visited); r != "" {
-			return fmt.Sprintf("Option<%s>", r)
+func (c comparer) samePayload(a, b []Type) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !c.sameType(a[i], b[i]) {
+			return false
 		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeVec:
-		if r := diffTypeStructural(oldSpec, newSpec, oldDef.MustVec().ElementType, newDef.MustVec().ElementType, visited); r != "" {
-			return fmt.Sprintf("Vec<%s>", r)
+	}
+	return true
+}
+
+// sameType reports whether two types are interchangeable on the wire.
+//
+// A user-defined type reached by the same name in both versions is treated as
+// the same type here: how its definition changed is reported once, against the
+// type, rather than again at every function that mentions it. Under different
+// names, the definitions must match structurally.
+func (c comparer) sameType(a, b Type) bool {
+	if a.Kind != b.Kind {
+		return false
+	}
+	switch a.Kind {
+	case "option":
+		return c.samePtr(a.Inner, b.Inner)
+	case "vec":
+		return c.samePtr(a.Element, b.Element)
+	case "map":
+		return c.samePtr(a.Key, b.Key) && c.samePtr(a.Value, b.Value)
+	case "result":
+		return c.samePtr(a.Ok, b.Ok) && c.samePtr(a.Err, b.Err)
+	case "tuple":
+		return c.samePayload(a.Elements, b.Elements)
+	case "bytes_n":
+		return a.Length == b.Length
+	case "udt":
+		if a.Display == b.Display {
+			return true
 		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeMap:
-		oldMap, newMap := oldDef.MustMap(), newDef.MustMap()
-		if r := diffTypeStructural(oldSpec, newSpec, oldMap.KeyType, newMap.KeyType, visited); r != "" {
-			return fmt.Sprintf("Map key (%s)", r)
+		oldType, okOld := c.old[a.Display]
+		newType, okNew := c.new[b.Display]
+		if !okOld || !okNew {
+			return false
 		}
-		if r := diffTypeStructural(oldSpec, newSpec, oldMap.ValueType, newMap.ValueType, visited); r != "" {
-			return fmt.Sprintf("Map value (%s)", r)
+		return canonUDT(oldType, c.old, map[string]bool{}) == canonUDT(newType, c.new, map[string]bool{})
+	}
+	return true
+}
+
+func (c comparer) samePtr(a, b *Type) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return c.sameType(*a, *b)
+}
+
+// canonType renders a type so that two structurally equal types render alike.
+func canonType(t Type, types map[string]UDT, visiting map[string]bool) string {
+	ptr := func(p *Type) string {
+		if p == nil {
+			return "?"
 		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeResult:
-		oldRes, newRes := oldDef.MustResult(), newDef.MustResult()
-		if r := diffTypeStructural(oldSpec, newSpec, oldRes.OkType, newRes.OkType, visited); r != "" {
-			return fmt.Sprintf("Result ok (%s)", r)
+		return canonType(*p, types, visiting)
+	}
+	switch t.Kind {
+	case "option":
+		return "option<" + ptr(t.Inner) + ">"
+	case "vec":
+		return "vec<" + ptr(t.Element) + ">"
+	case "map":
+		return "map<" + ptr(t.Key) + "," + ptr(t.Value) + ">"
+	case "result":
+		return "result<" + ptr(t.Ok) + "," + ptr(t.Err) + ">"
+	case "tuple":
+		parts := make([]string, len(t.Elements))
+		for i, e := range t.Elements {
+			parts[i] = canonType(e, types, visiting)
 		}
-		if r := diffTypeStructural(oldSpec, newSpec, oldRes.ErrorType, newRes.ErrorType, visited); r != "" {
-			return fmt.Sprintf("Result error (%s)", r)
+		return "tuple(" + strings.Join(parts, ",") + ")"
+	case "bytes_n":
+		return fmt.Sprintf("bytes_n(%d)", t.Length)
+	case "udt":
+		def, ok := types[t.Display]
+		if !ok {
+			return "udt:" + t.Display
 		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeTuple:
-		oldTup, newTup := oldDef.MustTuple(), newDef.MustTuple()
-		if len(oldTup.ValueTypes) != len(newTup.ValueTypes) {
-			return fmt.Sprintf("tuple arity %d -> %d", len(oldTup.ValueTypes), len(newTup.ValueTypes))
+		return canonUDT(def, types, visiting)
+	}
+	return t.Kind
+}
+
+// canonUDT renders a definition with fields and cases sorted by name. A type
+// that refers back to itself renders the inner reference by name, which ends
+// the recursion.
+func canonUDT(u UDT, types map[string]UDT, visiting map[string]bool) string {
+	if visiting[u.Name] {
+		return "recursive:" + u.Name
+	}
+	visiting[u.Name] = true
+	defer delete(visiting, u.Name)
+
+	var parts []string
+	switch u.Kind {
+	case UDTStruct:
+		for _, f := range sortedParams(u.Fields) {
+			parts = append(parts, f.Name+":"+canonType(f.Type, types, visiting))
 		}
-		for i := range oldTup.ValueTypes {
-			if r := diffTypeStructural(oldSpec, newSpec, oldTup.ValueTypes[i], newTup.ValueTypes[i], visited); r != "" {
-				return fmt.Sprintf("tuple element %d (%s)", i, r)
+	case UDTUnion:
+		for _, k := range sortedCases(u.Cases) {
+			payload := make([]string, len(k.Payload))
+			for i, p := range k.Payload {
+				payload[i] = canonType(p, types, visiting)
 			}
+			parts = append(parts, k.Name+"("+strings.Join(payload, ",")+")")
 		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeBytesN:
-		oldN, newN := oldDef.MustBytesN().N, newDef.MustBytesN().N
-		if oldN != newN {
-			return fmt.Sprintf("BytesN<%d> -> BytesN<%d>", oldN, newN)
-		}
-		return ""
-	case xdr.ScSpecTypeScSpecTypeUdt:
-		oldName := oldDef.MustUdt().Name
-		newName := newDef.MustUdt().Name
-		pairKey := oldName + "|" + newName
-		if visited[pairKey] {
-			return ""
-		}
-		visited[pairKey] = true
-		return diffNamedUDT(oldSpec, newSpec, oldName, newName, visited)
 	default:
-		return ""
+		for _, k := range sortedCases(u.Cases) {
+			parts = append(parts, fmt.Sprintf("%s=%d", k.Name, k.Value))
+		}
 	}
+	return u.Kind + "{" + strings.Join(parts, ";") + "}"
 }
 
-func diffNamedUDT(oldSpec, newSpec *Spec, oldName, newName string, visited map[string]bool) string {
-	if oldSt, ok := oldSpec.Structs[oldName]; ok {
-		newSt, ok2 := newSpec.Structs[newName]
-		if !ok2 {
-			return fmt.Sprintf("struct %s is not a struct in new spec (%s)", oldName, newName)
-		}
-		return diffStruct(oldSpec, newSpec, oldSt, newSt, visited)
-	}
-	if oldUn, ok := oldSpec.Unions[oldName]; ok {
-		newUn, ok2 := newSpec.Unions[newName]
-		if !ok2 {
-			return fmt.Sprintf("union %s is not a union in new spec (%s)", oldName, newName)
-		}
-		return diffUnion(oldSpec, newSpec, oldUn, newUn, visited)
-	}
-	if oldEn, ok := oldSpec.Enums[oldName]; ok {
-		newEn, ok2 := newSpec.Enums[newName]
-		if !ok2 {
-			return fmt.Sprintf("enum %s is not an enum in new spec (%s)", oldName, newName)
-		}
-		b, _ := diffEnumCases(oldEn.Cases, newEn.Cases)
-		return b
-	}
-	if oldEr, ok := oldSpec.ErrorEnums[oldName]; ok {
-		newEr, ok2 := newSpec.ErrorEnums[newName]
-		if !ok2 {
-			return fmt.Sprintf("error enum %s is not an error enum in new spec (%s)", oldName, newName)
-		}
-		b, _ := diffErrorEnumCases(oldEr.Cases, newEr.Cases)
-		return b
-	}
-	if oldName != newName {
-		return fmt.Sprintf("%s -> %s", oldName, newName)
-	}
-	return ""
-}
-
-func diffStruct(oldSpec, newSpec *Spec, oldSt, newSt xdr.ScSpecUdtStructV0, visited map[string]bool) string {
-	if len(oldSt.Fields) != len(newSt.Fields) {
-		return fmt.Sprintf("field count changed from %d to %d", len(oldSt.Fields), len(newSt.Fields))
-	}
-	for i := range oldSt.Fields {
-		of := oldSt.Fields[i]
-		nf := newSt.Fields[i]
-		if of.Name != nf.Name {
-			return fmt.Sprintf("field %q renamed to %q", of.Name, nf.Name)
-		}
-		if r := diffTypeStructural(oldSpec, newSpec, of.Type, nf.Type, visited); r != "" {
-			return fmt.Sprintf("field %q changed type (%s)", of.Name, r)
-		}
-	}
-	return ""
-}
-
-func diffUnion(oldSpec, newSpec *Spec, oldUn, newUn xdr.ScSpecUdtUnionV0, visited map[string]bool) string {
-	newCases := make(map[string]xdr.ScSpecUdtUnionCaseV0, len(newUn.Cases))
-	for _, c := range newUn.Cases {
-		newCases[unionCaseName(c)] = c
-	}
-	for _, oc := range oldUn.Cases {
-		cName := unionCaseName(oc)
-		nc, ok := newCases[cName]
-		if !ok {
-			return fmt.Sprintf("case %q was removed", cName)
-		}
-		if oc.Kind != nc.Kind {
-			return fmt.Sprintf("case %q changed kind", cName)
-		}
-		if oc.Kind == xdr.ScSpecUdtUnionCaseV0KindScSpecUdtUnionCaseTupleV0 {
-			ot := oc.MustTupleCase().Type
-			nt := nc.MustTupleCase().Type
-			if len(ot) != len(nt) {
-				return fmt.Sprintf("case %q payload count changed from %d to %d", cName, len(ot), len(nt))
-			}
-			for i := range ot {
-				if r := diffTypeStructural(oldSpec, newSpec, ot[i], nt[i], visited); r != "" {
-					return fmt.Sprintf("case %q payload %d changed type (%s)", cName, i, r)
-				}
-			}
-		}
-	}
-	if len(newUn.Cases) != len(oldUn.Cases) {
-		return fmt.Sprintf("case count changed from %d to %d", len(oldUn.Cases), len(newUn.Cases))
-	}
-	return ""
-}
-
-func unionCaseName(c xdr.ScSpecUdtUnionCaseV0) string {
-	if c.Kind == xdr.ScSpecUdtUnionCaseV0KindScSpecUdtUnionCaseVoidV0 {
-		return c.MustVoidCase().Name
-	}
-	return c.MustTupleCase().Name
-}
-
-func diffEnumCases(oldCases, newCases []xdr.ScSpecUdtEnumCaseV0) (string, []xdr.ScSpecUdtEnumCaseV0) {
-	byName := make(map[string]uint32, len(newCases))
-	oldNames := make(map[string]bool, len(oldCases))
-	for _, c := range newCases {
-		byName[c.Name] = uint32(c.Value)
-	}
-	for _, oc := range oldCases {
-		oldNames[oc.Name] = true
-		nv, ok := byName[oc.Name]
-		if !ok {
-			return fmt.Sprintf("case %q (%d) was removed", oc.Name, oc.Value), nil
-		}
-		if uint32(oc.Value) != nv {
-			return fmt.Sprintf("case %q changed value from %d to %d", oc.Name, oc.Value, nv), nil
-		}
-	}
-	var added []xdr.ScSpecUdtEnumCaseV0
-	for _, nc := range newCases {
-		if !oldNames[nc.Name] {
-			added = append(added, nc)
-		}
-	}
-	return "", added
-}
-
-func diffErrorEnumCases(oldCases, newCases []xdr.ScSpecUdtErrorEnumCaseV0) (string, []xdr.ScSpecUdtErrorEnumCaseV0) {
-	byName := make(map[string]uint32, len(newCases))
-	oldNames := make(map[string]bool, len(oldCases))
-	for _, c := range newCases {
-		byName[c.Name] = uint32(c.Value)
-	}
-	for _, oc := range oldCases {
-		oldNames[oc.Name] = true
-		nv, ok := byName[oc.Name]
-		if !ok {
-			return fmt.Sprintf("error case %q (%d) was removed", oc.Name, oc.Value), nil
-		}
-		if uint32(oc.Value) != nv {
-			return fmt.Sprintf("error case %q changed value from %d to %d", oc.Name, oc.Value, nv), nil
-		}
-	}
-	var added []xdr.ScSpecUdtErrorEnumCaseV0
-	for _, nc := range newCases {
-		if !oldNames[nc.Name] {
-			added = append(added, nc)
-		}
-	}
-	return "", added
-}
-
-func outputTypeOrVoid(outputs []xdr.ScSpecTypeDef) xdr.ScSpecTypeDef {
-	if len(outputs) == 0 {
-		return xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeVoid}
-	}
-	return outputs[0]
-}
-
-func formatSpecFn(fn xdr.ScSpecFunctionV0) string {
-	var b strings.Builder
-	b.WriteString("fn ")
-	b.WriteString(string(fn.Name))
-	b.WriteByte('(')
-	for i, in := range fn.Inputs {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(in.Name)
-		b.WriteString(": ")
-		b.WriteString(specType(in.Type).Display)
-	}
-	b.WriteByte(')')
-	if len(fn.Outputs) > 0 {
-		b.WriteString(" -> ")
-		b.WriteString(specType(fn.Outputs[0]).Display)
-	}
-	return b.String()
-}
-
-func sortedMapKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+func sortedCases(cases []Case) []Case {
+	out := append([]Case(nil), cases...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
