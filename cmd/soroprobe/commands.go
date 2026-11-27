@@ -59,6 +59,9 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
+	var compareWith string
+	var trace bool
+	var envelope, envelopeFile string
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -88,8 +91,35 @@ the run is flagged as noisy and the command exits 1. When --baseline is also
 given, the comparison uses the maximum of the repeated runs, so a flaky
 estimate cannot make a cost check pass by luck.
 
+--compare <contract2> simulates the same call on a second contract and prints
+the footprint entries only one of them touches, entries that moved between
+read-only and read-write, and the change in each resource. Entries of the
+called contract itself line up as "self". With --json only the comparison is
+printed, sorted and stable for CI. "soroprobe diff" compares two saved reports.
+
+--trace prints the cross-contract call tree from the simulation's diagnostic
+events: each call's contract, function, arguments (named from the contract's
+interface where it can be read) and return value, with an error at the frame
+that raised it.
+
+--envelope (or --envelope-file, "-" for stdin) simulates a prebuilt base64
+transaction envelope exactly as a wallet or dApp built it, instead of
+building one. It must hold a single InvokeHostFunction operation.
+
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
+			if envelope != "" || envelopeFile != "" {
+				if envelope != "" && envelopeFile != "" {
+					return fmt.Errorf("give --envelope or --envelope-file, not both")
+				}
+				if len(args) > 0 || file != "" {
+					return fmt.Errorf("an envelope already names its call, so give no contract, function or --file with it")
+				}
+				if baselinePath != "" || maxIncrease != "" || repeat > 1 || maxSpread != "" || compareWith != "" {
+					return fmt.Errorf("--envelope cannot be combined with --baseline, --max-increase, --repeat, --max-spread or --compare")
+				}
+				return nil
+			}
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract call or --file, not both")
@@ -120,6 +150,9 @@ estimate cannot make a cost check pass by luck.
 			if file != "" {
 				return runSimulateFile(cmd, opts, file, report)
 			}
+			if envelope != "" || envelopeFile != "" {
+				return runSimulateEnvelope(cmd, opts, envelope, envelopeFile, trace, report)
+			}
 
 			baseline, err := readBaseline(baselinePath)
 			if err != nil {
@@ -148,9 +181,29 @@ estimate cannot make a cost check pass by luck.
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
+				Trace:              trace,
 			})
 			if err != nil {
 				return err
+			}
+
+			if compareWith != "" {
+				other, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
+					ContractID: compareWith,
+					Function:   args[1],
+					Args:       args[2:],
+				})
+				if err != nil {
+					return err
+				}
+				diff, err := probe.CompareSimulations(args[0], result, compareWith, other)
+				if err != nil {
+					return err
+				}
+				if opts.jsonOut {
+					return writeJSON(cmd.OutOrStdout(), diff)
+				}
+				return renderDiff(cmd.OutOrStdout(), diff)
 			}
 
 			if err := report.write(result); err != nil {
@@ -189,6 +242,10 @@ estimate cannot make a cost check pass by luck.
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
+	cmd.Flags().StringVar(&compareWith, "compare", "", "simulate the same call on this second contract and compare footprints and resources")
+	cmd.Flags().BoolVar(&trace, "trace", false, "print the cross-contract call tree")
+	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate this prebuilt base64 transaction envelope as given")
+	cmd.Flags().StringVar(&envelopeFile, "envelope-file", "", `read the envelope to simulate from a file ("-" for stdin)`)
 	return cmd
 }
 
@@ -933,4 +990,38 @@ func parseDurability(s string) (health.Durability, error) {
 	default:
 		return "", fmt.Errorf("unknown durability %q (want persistent or temporary)", s)
 	}
+}
+
+// runSimulateEnvelope simulates a prebuilt envelope as given.
+func runSimulateEnvelope(cmd *cobra.Command, opts *options, envelope, envelopeFile string, trace bool, report *reportFile) error {
+	if envelopeFile != "" {
+		var raw []byte
+		var err error
+		if envelopeFile == "-" {
+			raw, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			raw, err = os.ReadFile(envelopeFile) //nolint:gosec // the operator names the envelope file; reading it is the feature.
+		}
+		if err != nil {
+			return fmt.Errorf("read envelope: %w", err)
+		}
+		envelope = string(raw)
+	}
+	p, cleanup, err := opts.prober()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	result, err := p.SimulateEnvelope(cmd.Context(), probe.EnvelopeRequest{EnvelopeXDR: envelope, Trace: trace})
+	if err != nil {
+		return err
+	}
+	if err := report.write(result); err != nil {
+		return err
+	}
+	if opts.jsonOut {
+		return writeJSON(cmd.OutOrStdout(), result)
+	}
+	return renderSimulate(cmd.OutOrStdout(), result)
 }

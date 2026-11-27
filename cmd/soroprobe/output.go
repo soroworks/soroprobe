@@ -111,6 +111,16 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	} else {
 		bw.printf("%s %s\n", s.bold("function"), r.Function)
 	}
+	if r.FromEnvelope {
+		bw.printf("%s %s\n", s.bold("source  "), r.Source)
+		if len(r.DecodedArgs) > 0 {
+			encoded, err := json.Marshal(r.DecodedArgs)
+			if err != nil {
+				return err
+			}
+			bw.printf("%s %s\n", s.bold("args    "), encoded)
+		}
+	}
 	if len(r.EncodedArgs) > 0 {
 		bw.printf("%s %s\n", s.bold("encoded "), strings.Join(r.EncodedArgs, " "))
 	}
@@ -172,6 +182,14 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		for _, k := range r.Footprint.ReadWrite {
 			bw.printf("  %s %s\n", s.cyan("write"), k)
 		}
+	}
+
+	if r.Trace != nil {
+		bw.printf("\n%s\n", s.bold("call trace"))
+		if len(r.Trace) == 0 {
+			bw.printf("  %s\n", s.dim("no fn_call events in the simulation"))
+		}
+		renderTrace(bw, s, r.Trace, 0)
 	}
 
 	if r.Comparison != nil {

@@ -406,6 +406,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "trace": {
+            "type": "boolean",
+            "description": "Build the cross-contract call tree from the simulation's diagnostic events."
           }
         },
         "required": ["contract_id", "function"]
@@ -453,6 +457,18 @@
           "footprint": {
             "$ref": "#/components/schemas/Footprint"
           },
+          "footprint_entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FootprintEntry"
+            }
+          },
+          "trace": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceFrame"
+            }
+          },
           "restore_required": {
             "$ref": "#/components/schemas/RestoreInfo"
           },
@@ -480,6 +496,34 @@
           "footprint",
           "latest_ledger"
         ]
+      },
+      "FootprintEntry": {
+        "type": "object",
+        "description": "A ledger entry the call touches. The called contract is named self.",
+        "properties": {
+          "access": { "type": "string", "enum": ["read_only", "read_write"] },
+          "kind": { "type": "string" },
+          "contract": { "type": "string" },
+          "key": {},
+          "durability": { "type": "string" },
+          "hash": { "type": "string" },
+          "account": { "type": "string" },
+          "label": { "type": "string" }
+        }
+      },
+      "TraceFrame": {
+        "type": "object",
+        "description": "One contract call in the simulated call tree.",
+        "properties": {
+          "contract": { "type": "string" },
+          "function": { "type": "string" },
+          "args": { "type": "array", "items": {} },
+          "arg_names": { "type": "array", "items": { "type": "string" } },
+          "returned": { "type": "boolean" },
+          "return": {},
+          "error": { "type": "string" },
+          "calls": { "type": "array", "items": { "$ref": "#/components/schemas/TraceFrame" } }
+        }
       },
       "Cost": {
         "type": "object",
