@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
