@@ -1,6 +1,7 @@
 package stellar_test
 
 import (
+	"fmt"
 	"runtime"
 	"testing"
 
@@ -54,6 +55,26 @@ func TestParseContractIDRejectsBadInput(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func ExampleParseContractID() {
+	addr, err := stellar.ParseContractID("CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC")
+	if err != nil {
+		fmt.Printf("parse error: %v\n", err)
+		return
+	}
+
+	fmt.Println(addr.Type)
+	str, err := addr.String()
+	if err != nil {
+		fmt.Printf("format error: %v\n", err)
+		return
+	}
+	fmt.Println(str)
+
+	// Output:
+	// ScAddressTypeScAddressTypeContract
+	// CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
 }
 
 func TestInstanceKeyShape(t *testing.T) {

@@ -126,6 +126,61 @@ func TestResolveThresholdsPerKindFallsBackIndependently(t *testing.T) {
 	assert.Equal(t, global, health.ResolveThresholds(health.EntryKindCode, global, health.ThresholdOverrides{}))
 }
 
+func TestResolveThresholdsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	global := health.Thresholds{Warn: 1000, Critical: 100}
+
+	// Table-driven edge cases: empty input, invalid input, and boundary values.
+	tests := []struct {
+		name      string
+		kind      health.EntryKind
+		global    health.Thresholds
+		overrides health.ThresholdOverrides
+		want      health.Thresholds
+	}{
+		{
+			name:      "empty input kind with zero global and empty overrides returns zero thresholds",
+			kind:      health.EntryKind(""),
+			global:    health.Thresholds{},
+			overrides: health.ThresholdOverrides{},
+			want:      health.Thresholds{Warn: 0, Critical: 0},
+		},
+		{
+			name:   "invalid input kind ignores configured overrides and falls back to global",
+			kind:   health.EntryKind("invalid_or_unknown_kind"),
+			global: global,
+			overrides: health.ThresholdOverrides{
+				Instance: &health.ThresholdOverride{Warn: ptr(500), Critical: ptr(50)},
+				Code:     &health.ThresholdOverride{Warn: ptr(400), Critical: ptr(40)},
+				Data:     &health.ThresholdOverride{Warn: ptr(300), Critical: ptr(30)},
+			},
+			want: global,
+		},
+		{
+			name:   "boundary values override global with exact zero and maximum uint32 thresholds",
+			kind:   health.EntryKindData,
+			global: global,
+			overrides: health.ThresholdOverrides{
+				Data: &health.ThresholdOverride{
+					Warn:     ptr(^uint32(0)),
+					Critical: ptr(0),
+				},
+			},
+			want: health.Thresholds{Warn: ^uint32(0), Critical: 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := health.ResolveThresholds(tt.kind, tt.global, tt.overrides)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestEvaluateExpiredHasNegativeTime(t *testing.T) {
 	t.Parallel()
 

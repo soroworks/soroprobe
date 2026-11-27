@@ -406,6 +406,82 @@ profiles:
 	})
 }
 
+func TestLoadWithProfileEdgeCases(t *testing.T) {
+	// Table-driven edge cases: empty input, invalid input, and boundary values.
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T) (path string, profile string)
+		wantErr     string
+		validateCfg func(t *testing.T, cfg config.Config)
+	}{
+		{
+			name: "empty path with profile requested and no config file present",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				t.Chdir(t.TempDir())
+				return "", "staging"
+			},
+			wantErr: `profile "staging" requested but no config file found`,
+		},
+		{
+			name: "invalid input with unparseable timeout duration in profile",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				content := `{
+					"profiles": {
+						"bad_timeout": {
+							"timeout": "not-a-valid-duration"
+						}
+					}
+				}`
+				return writeConfigFile(t, "soroprobe.json", content), "bad_timeout"
+			},
+			wantErr: "timeout: time: invalid duration",
+		},
+		{
+			name: "boundary values in profile zero out ledgers and timeout",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				content := `{
+					"warn_ledgers": 100,
+					"critical_ledgers": 10,
+					"timeout": "15s",
+					"profiles": {
+						"zero_boundary": {
+							"warn_ledgers": 0,
+							"critical_ledgers": 0,
+							"timeout": "0s"
+						}
+					}
+				}`
+				return writeConfigFile(t, "soroprobe.json", content), "zero_boundary"
+			},
+			validateCfg: func(t *testing.T, cfg config.Config) {
+				t.Helper()
+				assert.EqualValues(t, 0, cfg.WarnLedgers)
+				assert.EqualValues(t, 0, cfg.CriticalLedgers)
+				assert.Zero(t, cfg.Timeout)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, profile := tt.setup(t)
+			cfg, err := config.LoadWithProfile(path, profile)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				if tt.validateCfg != nil {
+					tt.validateCfg(t, cfg)
+				}
+			}
+		})
+	}
+}
+
 func TestLogFileCannotSetTheAPIToken(t *testing.T) {
 	// The token is a secret, so the config file cannot carry one: an
 	// "api_token" key is ignored rather than honored, and the operator is
