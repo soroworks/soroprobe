@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/stellar/go-stellar-sdk/xdr"
 	"math/big"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -67,4 +68,17 @@ func TestFormatUnits(t *testing.T) {
 			assert.Equal(t, c.want, probe.FormatUnits(big.NewInt(c.n), c.decimals))
 		})
 	}
+}
+
+// BenchmarkFormatUnits tracks the cost of formatting a raw balance for a
+// 7-decimal token, which is the common case for Stellar assets.
+func BenchmarkFormatUnits(b *testing.B) {
+	n := big.NewInt(125_000_000)
+
+	b.ReportAllocs()
+	var got string
+	for b.Loop() {
+		got = probe.FormatUnits(n, 7)
+	}
+	runtime.KeepAlive(got)
 }

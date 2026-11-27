@@ -862,6 +862,44 @@ only verify sources and images you trust. Values starting with `-` are rejected
 for `--source`, `--rev` and `--image`, and metadata read from the contract is
 held to the same rule.
 
+### `soroprobe tx <hash>`
+
+Fetches a submitted transaction with `getTransaction` and explains it:
+
+- the contract function it called and the decoded arguments
+- what it returned
+- the resources it declared, the resource fee it offered and was charged, and the total fee charged
+- the contract events it emitted
+
+A failed transaction shows its result code, the invokeHostFunction result (such as `Trapped`) and the host or contract error from its diagnostic events. A transaction older than the RPC's retention window gives a clear error naming the window the RPC covers. `--json` prints the same report.
+
+### `soroprobe wasm <contract-id | file.wasm>`
+
+Reads a contract's WebAssembly, from a local file or a deployed contract's code entry. It reports:
+
+- the size and hash
+- exported functions
+- imported host functions
+- the `contractmetav0` metadata (Rust and SDK versions, custom entries)
+- the `contractenvmetav0` interface version
+
+A malformed module is an error, never a crash; the parser is fuzzed.
+
+It also flags **privileged functions that never require authorization**. For each exported function whose name contains one of the `--privileged` fragments (upgrade, set_admin, withdraw, mint, burn, pause and similar by default), it builds the call graph from the code section and looks for a path to the `require_auth` or `require_auth_for_args` host function. The verdict is one of:
+
+- `requires_auth`, with the call chain
+- `no_auth_found`, an admin action anyone could call
+- `unknown`, when only an indirect call could lead there
+
+This is a heuristic: a path does not prove every route through the function authorizes, and authorization done another way is not seen.
+
+### Environment version in `check`
+
+`check` compares the protocol a contract's WASM was built for (its `contractenvmetav0` interface version) with the protocol the network reports through `getNetwork`:
+
+- A contract built for a newer protocol than the network runs is a FAIL: it cannot run until the network upgrades.
+- A pre-release build on mainnet is a WARN.
+- The step is skipped for Stellar Asset Contracts.
 ### Comparing footprints: `simulate --compare <contract2>` and `soroprobe diff <a.json> <b.json>`
 
 `--compare` simulates the same call on a second contract, such as a new version of the same code. `diff` compares two saved `simulate --json` reports. Both print:

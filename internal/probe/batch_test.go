@@ -57,7 +57,7 @@ func TestCheckBatchMatchesIndividualChecksWithFewerLedgerRequests(t *testing.T) 
 		require.NoError(t, err)
 		assert.Equal(t, individual, batched.Items[i].Result)
 	}
-	assert.Len(t, fake.EntryRequests, 5, "the two separate checks add three RPC calls")
+	assert.Len(t, fake.EntryRequests, 6, "the two separate checks add four RPC calls: the Wasm one also reads its code for the environment version")
 }
 
 func TestCheckBatchChunksLedgerKeysAtRPCLimit(t *testing.T) {

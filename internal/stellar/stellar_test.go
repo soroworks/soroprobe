@@ -1,6 +1,7 @@
 package stellar_test
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -133,6 +134,20 @@ func TestCodeKey(t *testing.T) {
 	encoded, err := stellar.EncodeKey(key)
 	require.NoError(t, err)
 	assert.NotEmpty(t, encoded)
+}
+
+// BenchmarkCodeKey tracks the cost of building the ledger key for a Wasm code
+// entry, which every code read performs.
+func BenchmarkCodeKey(b *testing.B) {
+	var hash xdr.Hash
+	copy(hash[:], []byte("0123456789abcdef0123456789abcdef"))
+
+	b.ReportAllocs()
+	var key xdr.LedgerKey
+	for b.Loop() {
+		key = stellar.CodeKey(hash)
+	}
+	runtime.KeepAlive(key)
 }
 
 func TestEncodeKeyEdgeCases(t *testing.T) {

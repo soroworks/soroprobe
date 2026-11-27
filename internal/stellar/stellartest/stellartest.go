@@ -110,6 +110,13 @@ type Fake struct {
 	LedgerCloseInterval   time.Duration
 	LatestLedgerCloseTime int64
 
+	// Transactions maps a transaction hash to the getTransaction response
+	// to return. A hash absent from the map is reported as NOT_FOUND, as RPC
+	// reports a transaction outside its retention window.
+	Transactions map[string]protocol.GetTransactionResponse
+	// TransactionErr injects a getTransaction transport failure.
+	TransactionErr error
+
 	// HealthErr and NetworkErr inject getHealth and getNetwork failures.
 	HealthErr  error
 	NetworkErr error
@@ -118,6 +125,9 @@ type Fake struct {
 	// leaves them alone behaves exactly as it always has.
 	HealthStatus      string
 	NetworkPassphrase string
+	// NetworkProtocol overrides the protocol version getNetwork reports.
+	// Zero reports 27, the version the recorded latest ledger carries.
+	NetworkProtocol int
 
 	// SimulateRequests and EntryRequests record what the code under test asked
 	// for, so tests can assert on the requests themselves.
@@ -262,7 +272,31 @@ func (f *Fake) GetNetwork(context.Context) (protocol.GetNetworkResponse, error) 
 	if passphrase == "" {
 		passphrase = "Test SDF Network ; September 2015"
 	}
-	return protocol.GetNetworkResponse{Passphrase: passphrase}, nil
+	version := f.NetworkProtocol
+	if version == 0 {
+		version = 27
+	}
+	return protocol.GetNetworkResponse{Passphrase: passphrase, ProtocolVersion: version}, nil
+}
+
+// GetTransaction implements stellar.Client.
+func (f *Fake) GetTransaction(_ context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error) {
+	if f.TransactionErr != nil {
+		return protocol.GetTransactionResponse{}, f.TransactionErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if resp, ok := f.Transactions[req.Hash]; ok {
+		return resp, nil
+	}
+	return protocol.GetTransactionResponse{
+		LatestLedger: f.LatestLedger,
+		OldestLedger: f.LatestLedger - 17280,
+		TransactionDetails: protocol.TransactionDetails{
+			Status:          protocol.TransactionStatusNotFound,
+			TransactionHash: req.Hash,
+		},
+	}, nil
 }
 
 // GetHealth implements stellar.Client.
