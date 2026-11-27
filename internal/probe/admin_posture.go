@@ -39,11 +39,11 @@ func (p *Prober) EvaluateAdminPosture(ctx context.Context, contractID, adminFn s
 	if err != nil {
 		return nil, fmt.Errorf("calling %s failed: %w", adminFn, err)
 	}
-	if !sim.Success || sim.Result == "" {
+	if !sim.Success || sim.ReturnValue == nil {
 		return nil, fmt.Errorf("resolving admin via %s failed: %s", adminFn, sim.Error)
 	}
 
-	rawAddr := strings.TrimSpace(sim.Result)
+	rawAddr := strings.TrimSpace(fmt.Sprintf("%v", sim.ReturnValue))
 	// Strip scval formatting if present (e.g. addr:G... or Address(G...))
 	rawAddr = strings.TrimPrefix(rawAddr, "addr:")
 	rawAddr = strings.TrimPrefix(rawAddr, "address:")
