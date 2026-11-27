@@ -3,6 +3,7 @@ package probe_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
@@ -155,4 +156,36 @@ func TestReadyWrongNetwork(t *testing.T) {
 	// see what the endpoint serves and what was expected.
 	assert.Contains(t, err.Error(), "Public Global Stellar Network")
 	assert.Contains(t, err.Error(), testnetPassphrase)
+}
+
+// Ready compares the passphrase it is given with the one the endpoint reports
+// exactly: nothing is trimmed and nothing is defaulted. A configuration that is
+// empty or padded is a wrong network like any other, and saying so is more
+// useful than letting it match by accident.
+func TestReadyPassphraseEdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"empty", ""},
+		{"whitespace only", " "},
+		{"trailing space", testnetPassphrase + " "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := stellartest.NewFake(t)
+			p := newProber(t, fake, health.Thresholds{})
+
+			err := p.Ready(context.Background(), tt.want)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, probe.ErrWrongNetwork)
+			assert.Contains(t, err.Error(), fmt.Sprintf("configured %q", tt.want))
+
+			// The endpoint answered both calls, so this is a network
+			// mismatch and not an unreachable endpoint.
+			assert.Equal(t, 1, fake.HealthRequests)
+			assert.Equal(t, 1, fake.NetworkRequests)
+		})
+	}
 }

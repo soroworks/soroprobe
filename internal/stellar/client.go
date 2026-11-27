@@ -41,6 +41,10 @@ type Client interface {
 	// GetFeeStats reports recent inclusion fee percentiles, for Soroban and
 	// classic transactions separately.
 	GetFeeStats(ctx context.Context) (protocol.GetFeeStatsResponse, error)
+	// GetTransaction fetches a submitted transaction by its hash. A
+	// transaction outside the RPC's retention window is reported with
+	// status NOT_FOUND, not as an error.
+	GetTransaction(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error)
 }
 
 // RPCClient is the live Client, backed by the Stellar RPC JSON-RPC API.
@@ -172,6 +176,20 @@ func (c *RPCClient) GetFeeStats(ctx context.Context) (protocol.GetFeeStatsRespon
 	resp, err := c.inner.GetFeeStats(ctx)
 	if err != nil {
 		return resp, fmt.Errorf("getFeeStats: %w", err)
+	}
+	return resp, nil
+}
+
+// GetTransaction implements Client.
+func (c *RPCClient) GetTransaction(ctx context.Context, req protocol.GetTransactionRequest) (protocol.GetTransactionResponse, error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := c.inner.GetTransaction(ctx, req)
+	c.log.Debug("getTransaction", "hash", req.Hash, "status", resp.Status, "took", time.Since(start), "err", err)
+	if err != nil {
+		return resp, fmt.Errorf("getTransaction: %w", err)
 	}
 	return resp, nil
 }
