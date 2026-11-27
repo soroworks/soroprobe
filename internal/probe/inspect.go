@@ -229,6 +229,7 @@ func (p *Prober) inspectUncached(ctx context.Context, req InspectRequest) (*Insp
 			return nil, err
 		}
 		result.Asset = asset
+		result.SACDetails = p.extractSACDetails(ctx, result.sacStorage)
 	}
 
 	// Round two: the code entry, now that the Wasm hash is known.
