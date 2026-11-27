@@ -55,6 +55,53 @@ func TestParseContractIDRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestParseContractIDBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// An all-zero payload is the smallest valid contract id: the version byte
+	// and checksum still make it a 32-byte address, not an absent one.
+	const zeroContract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"
+
+	t.Run("all-zero payload parses", func(t *testing.T) {
+		t.Parallel()
+
+		addr, err := stellar.ParseContractID(zeroContract)
+		require.NoError(t, err)
+		assert.Equal(t, xdr.ScAddressTypeScAddressTypeContract, addr.Type)
+		require.NotNil(t, addr.ContractId)
+		assert.Equal(t, xdr.ContractId{}, *addr.ContractId)
+
+		back, err := addr.String()
+		require.NoError(t, err)
+		assert.Equal(t, zeroContract, back)
+	})
+
+	// Payload length is what the version byte promises; one byte either side
+	// is rejected, as is anything that is not the canonical encoding.
+	tests := []struct {
+		name    string
+		in      string
+		wantErr string
+	}{
+		{"payload one byte short", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMLRA", "payload length 31"},
+		{"payload one byte long", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADZKM", "payload length 33"},
+		{"lowercase is not canonical", "caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabsc4", "non-canonical"},
+		{"leading space", " " + zeroContract, "non-canonical"},
+		{"trailing space", zeroContract + " ", "non-canonical"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := stellar.ParseContractID(tt.in)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), tt.in, "error should quote the offending input")
+		})
+	}
+}
+
 func TestInstanceKeyShape(t *testing.T) {
 	t.Parallel()
 

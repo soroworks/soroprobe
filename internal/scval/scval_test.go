@@ -3,6 +3,8 @@ package scval_test
 import (
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -281,6 +283,46 @@ func TestEncodeSpecEdgeCases(t *testing.T) {
 	}
 }
 
+func TestEncodeWhitespaceAndDelimiterEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	// Specs are never trimmed. The keyword forms are matched case-insensitively
+	// but a stray space still turns a value into a string, and only the first
+	// colon splits a prefix from its literal.
+	tests := []struct {
+		name     string
+		spec     string
+		wantType xdr.ScValType
+		want     any
+	}{
+		{"single space is a string", " ", xdr.ScValTypeScvString, " "},
+		{"tab is a string", "\t", xdr.ScValTypeScvString, "\t"},
+		{"newline is a string", "\n", xdr.ScValTypeScvString, "\n"},
+		{"leading space blocks integer inference", " 5", xdr.ScValTypeScvString, " 5"},
+		{"trailing space blocks bool inference", "true ", xdr.ScValTypeScvString, "true "},
+		{"bare colon is a string", ":", xdr.ScValTypeScvString, ":"},
+		{"leading colon is not a prefix", ":true", xdr.ScValTypeScvString, ":true"},
+		{"unregistered prefix keeps its colon", "notatype:", xdr.ScValTypeScvString, "notatype:"},
+		{"literal keeps its remaining colons", "str:a:b", xdr.ScValTypeScvString, "a:b"},
+		{"uppercase keyword still infers", "TRUE", xdr.ScValTypeScvBool, true},
+	}
+
+	codec := scval.NewRegistry()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := codec.Encode(tt.spec)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, got.Type)
+
+			decoded, err := codec.Decode(got)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, decoded, "the literal must be preserved exactly")
+		})
+	}
+}
+
 func TestEncodeEmptyLiteralErrors(t *testing.T) {
 	t.Parallel()
 
@@ -324,6 +366,103 @@ func TestEncodeAllEmpty(t *testing.T) {
 	args, err := codec.EncodeAll(nil)
 	require.NoError(t, err)
 	assert.Empty(t, args)
+}
+
+func TestEncodeAllEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	codec := scval.NewRegistry()
+
+	t.Run("empty slice returns an empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		args, err := codec.EncodeAll([]string{})
+		require.NoError(t, err)
+		assert.NotNil(t, args, "a successful empty encode should not return nil")
+		assert.Empty(t, args)
+	})
+
+	t.Run("results keep their positions", func(t *testing.T) {
+		t.Parallel()
+
+		args, err := codec.EncodeAll([]string{"u32:1", "str:two", "bool:true"})
+		require.NoError(t, err)
+		require.Len(t, args, 3)
+
+		decoded := make([]any, 0, len(args))
+		for _, arg := range args {
+			v, err := codec.Decode(arg)
+			require.NoError(t, err)
+			decoded = append(decoded, v)
+		}
+		assert.Equal(t, []any{uint32(1), "two", true}, decoded)
+	})
+
+	// A failure reports which argument failed and returns nothing: a caller
+	// must not be able to use a list that silently stops at the bad element.
+	tests := []struct {
+		name      string
+		specs     []string
+		wantIndex string
+	}{
+		{"first argument", []string{"u32:bad", "u32:1"}, "arg 0"},
+		{"last argument", []string{"u32:1", "bool:maybe"}, "arg 1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			args, err := codec.EncodeAll(tt.specs)
+			require.Error(t, err)
+			assert.Nil(t, args, "a failed encode must not return a partial list")
+			assert.Contains(t, err.Error(), tt.wantIndex)
+		})
+	}
+}
+
+func TestTypeNamesEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero value registry lists nothing", func(t *testing.T) {
+		t.Parallel()
+
+		// The encoders map is nil until Register or NewRegistry runs; listing
+		// the names must still answer without panicking.
+		var codec scval.Registry
+		names := codec.TypeNames()
+		assert.Empty(t, names)
+		assert.NotNil(t, names, "callers should get an empty slice, not nil")
+	})
+
+	t.Run("names are sorted, lowercase, and usable as prefixes", func(t *testing.T) {
+		t.Parallel()
+
+		codec := scval.NewRegistry()
+		names := codec.TypeNames()
+		require.NotEmpty(t, names)
+		assert.True(t, sort.StringsAreSorted(names), "TypeNames must be sorted")
+		for _, name := range names {
+			assert.Equal(t, strings.ToLower(name), name, "registered names are stored lowercase")
+			assert.True(t, codec.HasType(name+":"), "%q from TypeNames should name a registered prefix", name)
+		}
+	})
+
+	t.Run("case variants are one name, not two", func(t *testing.T) {
+		t.Parallel()
+
+		codec := scval.NewRegistry()
+		before := len(codec.TypeNames())
+
+		void := func(string) (xdr.ScVal, error) { return xdr.ScVal{Type: xdr.ScValTypeScvVoid}, nil }
+		codec.Register("ANSWER", void)
+		codec.Register("answer", void)
+
+		names := codec.TypeNames()
+		assert.Len(t, names, before+1, "a case variant replaces its name instead of adding one")
+		assert.Contains(t, names, "answer")
+		assert.NotContains(t, names, "ANSWER")
+	})
 }
 
 func TestRegisterCustomType(t *testing.T) {
