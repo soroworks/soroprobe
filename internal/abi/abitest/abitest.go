@@ -164,3 +164,16 @@ func uleb(n int) []byte {
 		return append(out, b)
 	}
 }
+
+// ErrorEnum declares a contract error enum.
+func ErrorEnum(name string, cases ...xdr.ScSpecUdtErrorEnumCaseV0) xdr.ScSpecEntry {
+	return xdr.ScSpecEntry{
+		Kind:           xdr.ScSpecEntryKindScSpecEntryUdtErrorEnumV0,
+		UdtErrorEnumV0: &xdr.ScSpecUdtErrorEnumV0{Name: name, Cases: cases},
+	}
+}
+
+// ErrorCase is one error enum case and its doc comment.
+func ErrorCase(name string, value uint32, doc string) xdr.ScSpecUdtErrorEnumCaseV0 {
+	return xdr.ScSpecUdtErrorEnumCaseV0{Name: name, Value: xdr.Uint32(value), Doc: doc}
+}
