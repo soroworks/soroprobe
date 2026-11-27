@@ -139,6 +139,7 @@ func (p *Prober) checkSteps() []CheckStep {
 		&adminStep{p: p},
 		&upgradeabilityStep{p: p},
 		&rentPayerStep{p: p},
+		&envVersionStep{p: p},
 	}
 }
 

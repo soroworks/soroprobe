@@ -92,11 +92,14 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 		newCompatCmd(opts),
 		newCompareCmd(opts),
 		newBalanceCmd(opts),
+		newWasmCmd(opts),
+		newTxCmd(opts),
 		newDiffCmd(opts),
 		newSweepCmd(opts),
 		newVerifyCmd(opts),
 		newServeCmd(opts),
 		newVersionCmd(),
+		newBalanceCmd(opts),
 	)
 	return cmd, opts
 }
