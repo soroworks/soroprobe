@@ -3,251 +3,216 @@ package probe
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
+
+	"github.com/soroworks/soroprobe/internal/scval"
 )
 
-// CallFrame is one node in a simulated cross-contract invocation tree,
-// reconstructed from the host's fn_call, fn_return, and error diagnostic
-// events.
-type CallFrame struct {
-	ContractID  string       `json:"contract_id"`
-	Function    string       `json:"function"`
-	Signature   string       `json:"signature,omitempty"`
-	Args        []any        `json:"args,omitempty"`
-	ReturnValue any          `json:"return_value,omitempty"`
-	HasReturn   bool         `json:"-"`
-	Success     bool         `json:"success"`
-	Error       string       `json:"error,omitempty"`
-	Calls       []*CallFrame `json:"calls,omitempty"`
+// TraceFrame is one contract call in a simulated call tree.
+type TraceFrame struct {
+	// Contract is the called contract ("C...").
+	Contract string `json:"contract"`
+	// Function is the called function.
+	Function string `json:"function"`
+	// Args are the decoded arguments.
+	Args []any `json:"args"`
+	// ArgNames are the parameter names from the contract's interface, when
+	// it could be read; they line up with Args.
+	ArgNames []string `json:"arg_names,omitempty"`
+	// Returned is true when the call returned; Return is its value.
+	Returned bool `json:"returned"`
+	Return   any  `json:"return,omitempty"`
+	// Error is the error raised in this frame, such as
+	// "Error(Contract, #3)", with any message the host attached.
+	Error string `json:"error,omitempty"`
+	// Calls are the calls this frame made, in order.
+	Calls []*TraceFrame `json:"calls,omitempty"`
 }
 
-// buildCallTree reconstructs the nested cross-contract call tree from the raw
-// base64 XDR diagnostic events emitted during simulation.
-func (p *Prober) buildCallTree(ctx context.Context, rawEvents []string, simError string) ([]*CallFrame, error) {
-	if len(rawEvents) == 0 {
-		return nil, nil
-	}
-
-	var (
-		roots []*CallFrame
-		stack []*CallFrame
-	)
-
-	for i, b64 := range rawEvents {
-		var de xdr.DiagnosticEvent
-		if err := xdr.SafeUnmarshalBase64(b64, &de); err != nil {
-			return nil, fmt.Errorf("event %d: %w", i, err)
+// buildCallTrace rebuilds the call tree from a simulation's diagnostic
+// events: every fn_call opens a frame under the innermost open one, the
+// matching fn_return closes it, and an error event is recorded on the frame
+// that was running when it was raised.
+func buildCallTrace(raw []string) ([]*TraceFrame, error) {
+	var roots []*TraceFrame
+	var stack []*TraceFrame
+	for _, b64 := range raw {
+		var ev xdr.DiagnosticEvent
+		if err := xdr.SafeUnmarshalBase64(b64, &ev); err != nil {
+			return nil, fmt.Errorf("decode diagnostic event: %w", err)
 		}
-
-		topics := de.Event.Body.V0.Topics
-		if len(topics) == 0 {
+		body, ok := ev.Event.Body.GetV0()
+		if !ok || len(body.Topics) == 0 {
 			continue
 		}
-
-		head, ok := scValSymbolOrString(topics[0])
+		kind, ok := body.Topics[0].GetSym()
 		if !ok {
 			continue
 		}
-
-		switch head {
+		switch string(kind) {
 		case "fn_call":
-			if len(topics) < 3 {
+			if len(body.Topics) < 3 {
 				continue
 			}
-			callee := extractCalleeContract(topics[1], de.Event.ContractId)
-			fnName, _ := scValSymbolOrString(topics[2])
-			args, err := p.decodeCallArgs(de.Event.Body.V0.Data)
-			if err != nil {
-				return nil, fmt.Errorf("event %d fn_call args: %w", i, err)
+			fn, _ := body.Topics[2].GetSym()
+			frame := &TraceFrame{
+				Contract: contractOf(body.Topics[1]),
+				Function: string(fn),
+				Args:     callArgs(body.Data),
 			}
-
-			frame := &CallFrame{
-				ContractID: callee,
-				Function:   fnName,
-				Args:       args,
-				Success:    de.InSuccessfulContractCall,
-			}
-			p.enrichFrameABI(ctx, frame)
-
-			if len(stack) == 0 {
-				roots = append(roots, frame)
+			if n := len(stack); n > 0 {
+				stack[n-1].Calls = append(stack[n-1].Calls, frame)
 			} else {
-				parent := stack[len(stack)-1]
-				parent.Calls = append(parent.Calls, frame)
+				roots = append(roots, frame)
 			}
 			stack = append(stack, frame)
-
 		case "fn_return":
 			if len(stack) == 0 {
 				continue
 			}
-			var fnName string
-			if len(topics) >= 2 {
-				fnName, _ = scValSymbolOrString(topics[1])
-			}
-			idx := len(stack) - 1
-			if fnName != "" {
-				for j := len(stack) - 1; j >= 0; j-- {
-					if stack[j].Function == fnName {
-						idx = j
-						break
-					}
+			fn := ""
+			if len(body.Topics) > 1 {
+				if s, ok := body.Topics[1].GetSym(); ok {
+					fn = string(s)
 				}
 			}
-			frame := stack[idx]
-			stack = stack[:idx]
-
-			retVal, err := p.codec.Decode(de.Event.Body.V0.Data)
-			if err != nil {
-				return nil, fmt.Errorf("event %d fn_return: %w", i, err)
+			// Close up to the frame this return belongs to; frames above it
+			// trapped without returning.
+			for i := len(stack) - 1; i >= 0; i-- {
+				if fn == "" || stack[i].Function == fn {
+					stack[i].Returned = true
+					stack[i].Return = decodeOrRaw(body.Data)
+					stack = stack[:i]
+					break
+				}
 			}
-			frame.ReturnValue = retVal
-			frame.HasReturn = true
-			if frame.Error == "" && de.InSuccessfulContractCall {
-				frame.Success = true
-			}
-
 		case "error":
-			errText := p.formatDiagnosticError(topics[1:], de.Event.Body.V0.Data)
-			if len(stack) > 0 {
-				top := stack[len(stack)-1]
-				top.Success = false
-				if top.Error == "" {
-					top.Error = errText
-				}
-			} else if len(roots) > 0 {
-				last := roots[len(roots)-1]
-				last.Success = false
-				if last.Error == "" {
-					last.Error = errText
-				}
+			if len(stack) == 0 {
+				continue
 			}
+			frame := stack[len(stack)-1]
+			if frame.Error != "" {
+				// The host repeats an error as it unwinds; the innermost
+				// frame keeps the first report.
+				continue
+			}
+			frame.Error = errorText(body)
 		}
 	}
-
-	// Any frame still on the stack when the event stream ended did not return
-	// normally; mark it failed and attach the simulation error if no specific
-	// diagnostic error event was emitted for it.
-	for i := len(stack) - 1; i >= 0; i-- {
-		frame := stack[i]
-		frame.Success = false
-		if frame.Error == "" && simError != "" && i == len(stack)-1 {
-			frame.Error = firstLine(simError)
-		}
-	}
-
 	return roots, nil
 }
 
-func (p *Prober) enrichFrameABI(ctx context.Context, frame *CallFrame) {
-	if p.abi == nil || frame.ContractID == "" || frame.Function == "" {
-		return
+// contractOf renders a fn_call's contract topic, which the host writes as
+// the contract's 32-byte hash, or as an address.
+func contractOf(v xdr.ScVal) string {
+	if b, ok := v.GetBytes(); ok && len(b) == 32 {
+		if s, err := strkey.Encode(strkey.VersionByteContract, b); err == nil {
+			return s
+		}
 	}
-	iface, err := p.abi.Interface(ctx, p.network, frame.ContractID)
+	if a, ok := v.GetAddress(); ok {
+		if s, err := a.String(); err == nil {
+			return s
+		}
+	}
+	return fmt.Sprint(decodeOrRaw(v))
+}
+
+// callArgs decodes a fn_call's data: the arguments as a vec, or the only
+// argument itself.
+func callArgs(v xdr.ScVal) []any {
+	if v.Type == xdr.ScValTypeScvVoid {
+		return []any{}
+	}
+	if vec, ok := v.GetVec(); ok && vec != nil {
+		out := make([]any, 0, len(*vec))
+		for _, item := range *vec {
+			out = append(out, decodeOrRaw(item))
+		}
+		return out
+	}
+	return []any{decodeOrRaw(v)}
+}
+
+func decodeOrRaw(v xdr.ScVal) any {
+	decoded, err := scval.Decode(v)
 	if err != nil {
-		return
+		return v.Type.String()
 	}
-	fn, err := iface.Lookup(frame.Function)
-	if err != nil {
-		return
-	}
-	frame.Signature = fn.Signature()
+	return decoded
 }
 
-func (p *Prober) decodeCallArgs(data xdr.ScVal) ([]any, error) {
-	switch data.Type {
-	case xdr.ScValTypeScvVoid:
-		return nil, nil
-	case xdr.ScValTypeScvVec:
-		if data.Vec == nil || *data.Vec == nil {
-			return nil, nil
+// errorText renders an error event: its Error(Type, Code) topic and the
+// host's message, when there is one.
+func errorText(body xdr.ContractEventV0) string {
+	text := ""
+	if len(body.Topics) > 1 {
+		if e, ok := body.Topics[1].GetError(); ok {
+			text = formatScError(e)
 		}
-		vec := **data.Vec
-		if len(vec) == 0 {
-			return nil, nil
+	}
+	msg := decodeOrRaw(body.Data)
+	if items, ok := msg.([]any); ok && len(items) > 0 {
+		msg = items[0]
+	}
+	if s, ok := msg.(string); ok && s != "" {
+		if text == "" {
+			return s
 		}
-		out := make([]any, 0, len(vec))
-		for _, item := range vec {
-			decoded, err := p.codec.Decode(item)
-			if err != nil {
-				return nil, err
+		return text + ": " + s
+	}
+	return text
+}
+
+// formatScError writes an ScError the way the host prints it.
+func formatScError(e xdr.ScError) string {
+	typ := scErrorTypeNames[e.Type]
+	if typ == "" {
+		typ = e.Type.String()
+	}
+	if e.Type == xdr.ScErrorTypeSceContract && e.ContractCode != nil {
+		return fmt.Sprintf("Error(%s, #%d)", typ, *e.ContractCode)
+	}
+	code := ""
+	if e.Code != nil {
+		code = scErrorCodeNames[*e.Code]
+		if code == "" {
+			code = e.Code.String()
+		}
+	}
+	return fmt.Sprintf("Error(%s, %s)", typ, code)
+}
+
+var scErrorTypeNames = map[xdr.ScErrorType]string{
+	xdr.ScErrorTypeSceContract: "Contract", xdr.ScErrorTypeSceWasmVm: "WasmVm",
+	xdr.ScErrorTypeSceContext: "Context", xdr.ScErrorTypeSceStorage: "Storage",
+	xdr.ScErrorTypeSceObject: "Object", xdr.ScErrorTypeSceCrypto: "Crypto",
+	xdr.ScErrorTypeSceEvents: "Events", xdr.ScErrorTypeSceBudget: "Budget",
+	xdr.ScErrorTypeSceValue: "Value", xdr.ScErrorTypeSceAuth: "Auth",
+}
+
+var scErrorCodeNames = map[xdr.ScErrorCode]string{
+	xdr.ScErrorCodeScecArithDomain: "ArithDomain", xdr.ScErrorCodeScecIndexBounds: "IndexBounds",
+	xdr.ScErrorCodeScecInvalidInput: "InvalidInput", xdr.ScErrorCodeScecMissingValue: "MissingValue",
+	xdr.ScErrorCodeScecExistingValue: "ExistingValue", xdr.ScErrorCodeScecExceededLimit: "ExceededLimit",
+	xdr.ScErrorCodeScecInvalidAction: "InvalidAction", xdr.ScErrorCodeScecInternalError: "InternalError",
+	xdr.ScErrorCodeScecUnexpectedType: "UnexpectedType", xdr.ScErrorCodeScecUnexpectedSize: "UnexpectedSize",
+}
+
+// nameTraceArgs adds parameter names to every frame whose contract's
+// interface can be read. A contract without one (a Stellar Asset Contract,
+// say) keeps unnamed arguments.
+func (p *Prober) nameTraceArgs(ctx context.Context, frames []*TraceFrame) {
+	for _, f := range frames {
+		if iface, err := p.chain.Interface(ctx, p.network, f.Contract); err == nil {
+			if fn, err := iface.Lookup(f.Function); err == nil && len(fn.Inputs) == len(f.Args) {
+				for _, in := range fn.Inputs {
+					f.ArgNames = append(f.ArgNames, in.Name)
+				}
 			}
-			out = append(out, decoded)
 		}
-		return out, nil
-	default:
-		decoded, err := p.codec.Decode(data)
-		if err != nil {
-			return nil, err
-		}
-		return []any{decoded}, nil
+		p.nameTraceArgs(ctx, f.Calls)
 	}
-}
-
-func (p *Prober) formatDiagnosticError(topics []xdr.ScVal, data xdr.ScVal) string {
-	var parts []string
-	for _, t := range topics {
-		if decoded, err := p.codec.Decode(t); err == nil && decoded != nil {
-			parts = append(parts, fmt.Sprint(decoded))
-		}
-	}
-	if data.Type != xdr.ScValTypeScvVoid {
-		if decoded, err := p.codec.Decode(data); err == nil && decoded != nil {
-			parts = append(parts, fmt.Sprint(decoded))
-		}
-	}
-	return strings.Join(parts, ": ")
-}
-
-func extractCalleeContract(topic xdr.ScVal, fallback *xdr.ContractId) string {
-	switch topic.Type {
-	case xdr.ScValTypeScvBytes:
-		if topic.Bytes != nil && len(*topic.Bytes) == 32 {
-			if encoded, err := strkey.Encode(strkey.VersionByteContract, *topic.Bytes); err == nil {
-				return encoded
-			}
-		}
-	case xdr.ScValTypeScvAddress:
-		if topic.Address != nil {
-			if s, err := topic.Address.String(); err == nil {
-				return s
-			}
-		}
-	case xdr.ScValTypeScvString:
-		if topic.Str != nil {
-			return string(*topic.Str)
-		}
-	case xdr.ScValTypeScvSymbol:
-		if topic.Sym != nil {
-			return string(*topic.Sym)
-		}
-	}
-	if fallback != nil {
-		if encoded, err := strkey.Encode(strkey.VersionByteContract, fallback[:]); err == nil {
-			return encoded
-		}
-	}
-	return ""
-}
-
-func scValSymbolOrString(v xdr.ScVal) (string, bool) {
-	switch v.Type {
-	case xdr.ScValTypeScvSymbol:
-		if v.Sym != nil {
-			return string(*v.Sym), true
-		}
-	case xdr.ScValTypeScvString:
-		if v.Str != nil {
-			return string(*v.Str), true
-		}
-	}
-	return "", false
-}
-
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	return strings.TrimSpace(line)
 }
