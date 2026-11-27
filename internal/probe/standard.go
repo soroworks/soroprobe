@@ -2,206 +2,141 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
-	"strings"
+
+	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/soroworks/soroprobe/internal/abi"
 )
 
-// StandardFunction specifies a required interface function under a standard.
-type StandardFunction struct {
-	Name     string
-	Inputs   []string // expected input type displays (e.g. "Address", "i128", "u32")
-	Output   string   // expected return type display
-	ReadOnly bool
-}
+// maxTokenDecimals is the largest decimals value SEP-41 tokens may report:
+// balances are i128, which holds 38 decimal digits.
+const maxTokenDecimals = 38
 
-// StandardSpec defines an on-chain smart contract interface standard.
-type StandardSpec struct {
-	Name        string
-	Description string
-	Functions   []StandardFunction
-}
+// standardStep verifies the contract's exported interface against a published
+// standard. Without a standard in the request it contributes nothing.
+//
+// The interface is read from the configured ABI source, or from the contract's
+// Wasm on chain when none is configured, so the check works with no setup.
+type standardStep struct{ p *Prober }
 
-// SEP41Standard defines the SEP-0041 Token Interface Specification.
-var SEP41Standard = StandardSpec{
-	Name:        "sep41",
-	Description: "SEP-0041 Token Interface Specification",
-	Functions: []StandardFunction{
-		{Name: "allowance", Inputs: []string{"Address", "Address"}, Output: "i128", ReadOnly: false},
-		{Name: "approve", Inputs: []string{"Address", "Address", "i128", "u32"}, Output: "", ReadOnly: false},
-		{Name: "balance", Inputs: []string{"Address"}, Output: "i128", ReadOnly: false},
-		{Name: "transfer", Inputs: []string{"Address", "Address", "i128"}, Output: "", ReadOnly: false},
-		{Name: "transfer_from", Inputs: []string{"Address", "Address", "Address", "i128"}, Output: "", ReadOnly: false},
-		{Name: "decimals", Inputs: nil, Output: "u32", ReadOnly: true},
-		{Name: "name", Inputs: nil, Output: "String", ReadOnly: true},
-		{Name: "symbol", Inputs: nil, Output: "String", ReadOnly: true},
-	},
-}
+func (s *standardStep) Name() string { return "standard" }
 
-var standardsRegistry = map[string]StandardSpec{
-	"sep41": SEP41Standard,
-}
-
-// CheckStandardCompliance verifies that a contract implements the named standard.
-func (p *Prober) CheckStandardCompliance(ctx context.Context, contractID, standardName string) ([]Check, error) {
-	spec, ok := standardsRegistry[strings.ToLower(strings.TrimSpace(standardName))]
-	if !ok {
-		return nil, fmt.Errorf("unrecognized standard %q (available: sep41)", standardName)
+func (s *standardStep) Run(ctx context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) ([]Check, error) {
+	if req.Standard == "" {
+		return nil, nil
 	}
-
-	if p.abi == nil {
-		return []Check{{
-			Name:    "standard:" + spec.Name,
-			Outcome: OutcomeWarn,
-			Detail:  "cannot verify interface standard: no ABI/SoroVault source configured",
-		}}, nil
-	}
-
-	iface, err := p.abi.Interface(ctx, p.network, contractID)
+	std, err := abi.LookupStandard(req.Standard)
 	if err != nil {
+		return nil, err
+	}
+	prefix := "standard:" + std.Name
+
+	// A Stellar Asset Contract is implemented by the host and has no Wasm
+	// interface to read. Its token interface is SEP-41 by construction.
+	if inspect.Executable == "stellar_asset" {
 		return []Check{{
-			Name:    "standard:" + spec.Name,
-			Outcome: OutcomeWarn,
-			Detail:  fmt.Sprintf("cannot verify interface standard: ABI lookup failed: %v", err),
+			Name:    prefix,
+			Outcome: OutcomeSkip,
+			Detail:  "stellar asset contracts are implemented by the host and have no Wasm interface to verify",
 		}}, nil
 	}
 
-	fnMap := make(map[string]abi.Function)
-	for _, fn := range iface.Functions {
-		fnMap[fn.Name] = fn
+	var iface *abi.Interface
+	if s.p.abi != nil {
+		iface, err = s.p.abi.Interface(ctx, s.p.network, req.ContractID)
+	} else {
+		iface, err = s.p.Interface(ctx, req.ContractID)
+	}
+	switch {
+	case errors.Is(err, abi.ErrUnknownContract), errors.Is(err, abi.ErrNoWasm):
+		return []Check{{
+			Name:    prefix,
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("the contract's interface could not be read: %v", err),
+		}}, nil
+	case err != nil:
+		return nil, err
 	}
 
+	deviations := std.Verify(iface)
+	failed := map[string]bool{}
 	var checks []Check
-	prefix := "standard:" + spec.Name + ":"
-
-	for _, expected := range spec.Functions {
-		actual, found := fnMap[expected.Name]
-		if !found {
-			checks = append(checks, Check{
-				Name:    prefix + expected.Name,
-				Outcome: OutcomeFail,
-				Detail:  fmt.Sprintf("missing required function %s", expected.Name),
-			})
-			continue
-		}
-
-		// Verify input count
-		if len(actual.Inputs) != len(expected.Inputs) {
-			checks = append(checks, Check{
-				Name:    prefix + expected.Name,
-				Outcome: OutcomeFail,
-				Detail:  fmt.Sprintf("parameter count mismatch: expected %d, got %d", len(expected.Inputs), len(actual.Inputs)),
-			})
-			continue
-		}
-
-		// Verify input types
-		typesMatch := true
-		for i, in := range actual.Inputs {
-			expType := expected.Inputs[i]
-			if !strings.EqualFold(in.Type.Display, expType) && !strings.EqualFold(in.Type.Kind, expType) {
-				typesMatch = false
-				checks = append(checks, Check{
-					Name:    prefix + expected.Name,
-					Outcome: OutcomeFail,
-					Detail:  fmt.Sprintf("parameter %d (%s) type mismatch: expected %s, got %s", i+1, in.Name, expType, in.Type.Display),
-				})
-				break
-			}
-		}
-		if !typesMatch {
-			continue
-		}
-
-		// Verify return type
-		if expected.Output != "" {
-			if len(actual.Outputs) == 0 {
-				checks = append(checks, Check{
-					Name:    prefix + expected.Name,
-					Outcome: OutcomeFail,
-					Detail:  fmt.Sprintf("return type mismatch: expected %s, got void", expected.Output),
-				})
-				continue
-			}
-			outDisplay := actual.Outputs[0].Display
-			outKind := actual.Outputs[0].Kind
-			if !strings.EqualFold(outDisplay, expected.Output) && !strings.EqualFold(outKind, expected.Output) {
-				checks = append(checks, Check{
-					Name:    prefix + expected.Name,
-					Outcome: OutcomeFail,
-					Detail:  fmt.Sprintf("return type mismatch: expected %s, got %s", expected.Output, outDisplay),
-				})
-				continue
-			}
-		}
-
+	for _, d := range deviations {
+		failed[d.Function] = true
 		checks = append(checks, Check{
-			Name:    prefix + expected.Name,
-			Outcome: OutcomePass,
-			Detail:  "interface matches specification",
+			Name:    prefix + ":" + d.Function,
+			Outcome: OutcomeFail,
+			Detail:  d.Problem,
 		})
-
-		// For read-only functions, simulate and verify sanity
-		if expected.ReadOnly {
-			sim, err := p.Simulate(ctx, SimulateRequest{
-				ContractID: contractID,
-				Function:   expected.Name,
-			})
-			simCheckName := prefix + expected.Name + ":sanity"
-			if err != nil || !sim.Success {
-				errMsg := "simulation failed"
-				if sim != nil && sim.Error != "" {
-					errMsg = sim.Error
-				} else if err != nil {
-					errMsg = err.Error()
-				}
-				checks = append(checks, Check{
-					Name:    simCheckName,
-					Outcome: OutcomeFail,
-					Detail:  fmt.Sprintf("read-only simulation failed: %s", errMsg),
-				})
-			} else {
-				// Sanity assertions
-				val := sim.Result
-				valid := true
-				reason := ""
-				switch expected.Name {
-				case "decimals":
-					clean := strings.TrimPrefix(val, "u32:")
-					clean = strings.TrimPrefix(clean, "i32:")
-					d, err := strconv.ParseUint(clean, 10, 32)
-					if err != nil || d > 18 {
-						valid = false
-						reason = fmt.Sprintf("unreasonable decimals value (%s)", val)
-					}
-				case "name", "symbol":
-					clean := strings.TrimPrefix(val, "sym:")
-					clean = strings.TrimPrefix(clean, "string:")
-					clean = strings.Trim(clean, `"'`)
-					if clean == "" {
-						valid = false
-						reason = "empty string returned"
-					}
-				}
-
-				if valid {
-					checks = append(checks, Check{
-						Name:    simCheckName,
-						Outcome: OutcomePass,
-						Detail:  fmt.Sprintf("simulation returned sane value (%s)", val),
-					})
-				} else {
-					checks = append(checks, Check{
-						Name:    simCheckName,
-						Outcome: OutcomeFail,
-						Detail:  reason,
-					})
-				}
-			}
-		}
+	}
+	if len(deviations) == 0 {
+		checks = append(checks, Check{
+			Name:    prefix,
+			Outcome: OutcomePass,
+			Detail:  fmt.Sprintf("all %d %s functions are exported with the standard signatures", len(std.Functions), std.Name),
+		})
 	}
 
+	// Signatures can match while behavior does not, so the zero-argument
+	// metadata calls are also run. A function that already deviates is not
+	// simulated: its failure would only repeat the same problem.
+	for _, fn := range std.Functions {
+		validate, ok := metadataValidators[fn.Name]
+		if !ok || failed[fn.Name] || len(fn.Inputs) != 0 {
+			continue
+		}
+		check, err := s.simulateMetadata(ctx, req.ContractID, prefix+":"+fn.Name+":simulate", fn.Name, validate)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, check)
+	}
 	return checks, nil
+}
+
+func (s *standardStep) simulateMetadata(ctx context.Context, contractID, name, fn string, validate func(xdr.ScVal) error) (Check, error) {
+	sim, err := s.p.Simulate(ctx, SimulateRequest{ContractID: contractID, Function: fn})
+	if err != nil {
+		return Check{}, err
+	}
+	if !sim.Success {
+		return Check{Name: name, Outcome: OutcomeFail, Detail: fmt.Sprintf("calling %s failed: %s", fn, sim.Error)}, nil
+	}
+	var val xdr.ScVal
+	if sim.ReturnValueXDR == "" {
+		val = xdr.ScVal{Type: xdr.ScValTypeScvVoid}
+	} else if err := xdr.SafeUnmarshalBase64(sim.ReturnValueXDR, &val); err != nil {
+		return Check{Name: name, Outcome: OutcomeFail, Detail: fmt.Sprintf("decode %s return value: %v", fn, err)}, nil
+	}
+	if err := validate(val); err != nil {
+		return Check{Name: name, Outcome: OutcomeFail, Detail: fmt.Sprintf("%s: %v", fn, err)}, nil
+	}
+	return Check{Name: name, Outcome: OutcomePass, Detail: fmt.Sprintf("calling %s returned %s", fn, formatVal(sim.ReturnValue))}, nil
+}
+
+// metadataValidators check the values the SEP-41 metadata functions return.
+var metadataValidators = map[string]func(xdr.ScVal) error{
+	"decimals": func(v xdr.ScVal) error {
+		if v.Type != xdr.ScValTypeScvU32 || v.U32 == nil {
+			return fmt.Errorf("returned %s, expected a u32", v.Type)
+		}
+		if *v.U32 > maxTokenDecimals {
+			return fmt.Errorf("returned %d, which exceeds the maximum of %d", *v.U32, maxTokenDecimals)
+		}
+		return nil
+	},
+	"name":   nonEmptyString,
+	"symbol": nonEmptyString,
+}
+
+func nonEmptyString(v xdr.ScVal) error {
+	if v.Type != xdr.ScValTypeScvString || v.Str == nil {
+		return fmt.Errorf("returned %s, expected a string", v.Type)
+	}
+	if len(*v.Str) == 0 {
+		return errors.New("returned an empty string")
+	}
+	return nil
 }
