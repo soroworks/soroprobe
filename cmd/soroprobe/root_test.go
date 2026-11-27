@@ -324,6 +324,24 @@ func TestCommandArgumentValidation(t *testing.T) {
 	}
 }
 
+func TestThresholdDurationFlags(t *testing.T) {
+	t.Run("duration converted to ledgers", func(t *testing.T) {
+		cfg := resolveConfig(t, "inspect", "--warn", "7d", "--critical", "36h")
+		assert.EqualValues(t, 120960, cfg.WarnLedgers)
+		assert.EqualValues(t, 25920, cfg.CriticalLedgers)
+	})
+
+	t.Run("giving both duration and ledgers is rejected", func(t *testing.T) {
+		err := runWith(t, "inspect", "CDLZ", "--warn", "7d", "--warn-ledgers", "120960")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "giving both --warn and --warn-ledgers is an error")
+
+		err = runWith(t, "inspect", "CDLZ", "--critical", "1d", "--critical-ledgers", "17280")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "giving both --critical and --critical-ledgers is an error")
+	})
+}
+
 func TestUnknownDurabilityIsRejected(t *testing.T) {
 	err := runWith(t, "inspect", "CDLZ", "--durability", "forever")
 	require.Error(t, err)
