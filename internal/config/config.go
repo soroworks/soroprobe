@@ -79,6 +79,7 @@ const (
 	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
 	EnvConfigFile              = "SOROPROBE_CONFIG"
 	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvABIFile                 = "ABI_FILE"
 	EnvBaseFee                 = "BASE_FEE"
 	EnvInspectCacheTTL         = "INSPECT_CACHE_TTL"
 	EnvAPIToken                = "API_TOKEN"
@@ -155,6 +156,9 @@ type Config struct {
 
 	// BaseFee is the base inclusion fee per operation in stroops.
 	BaseFee int64 `json:"base_fee"`
+	// ABIFile, when set, is a path to a local ABI JSON file used to type
+	// simulate arguments. It is mutually exclusive with SoroVaultURL.
+	ABIFile string `json:"abi_file"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -189,6 +193,7 @@ type fileConfig struct {
 	CriticalLedgers        *uint32                    `json:"critical_ledgers" yaml:"critical_ledgers"`
 	ThresholdOverrides     *health.ThresholdOverrides `json:"thresholds" yaml:"thresholds"`
 	SoroVaultURL           *string                    `json:"sorovault_url" yaml:"sorovault_url"`
+	ABIFile                *string                    `json:"abi_file" yaml:"abi_file"`
 	BaseFee                *int64                     `json:"base_fee" yaml:"base_fee"`
 	InspectCacheTTL        *string                    `json:"inspect_cache_ttl" yaml:"inspect_cache_ttl"`
 	HTTPRateLimitPerMinute *uint32                    `json:"http_rate_limit_per_minute" yaml:"http_rate_limit_per_minute"`
@@ -322,6 +327,7 @@ func applyValues(cfg *Config, path string, fc *fileConfig) error {
 	setString(&cfg.LogLevel, fc.LogLevel)
 	setString(&cfg.LogFormat, fc.LogFormat)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
+	setString(&cfg.ABIFile, fc.ABIFile)
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
 	}
@@ -431,6 +437,7 @@ func applyEnvWith(cfg *Config, networkEnv bool) error {
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
 	setString(&cfg.LogFormat, lookup(EnvLogFormat))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
+	setString(&cfg.ABIFile, lookup(EnvABIFile))
 	setString(&cfg.APIToken, lookup(EnvAPIToken))
 	setString(&cfg.SoroForgeToken, lookup(EnvSoroForgeToken))
 
@@ -602,6 +609,9 @@ func (c Config) Validate() error {
 	if c.SoroVaultURL != "" &&
 		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
 		return fmt.Errorf("sorovault url %q must start with http:// or https://", c.SoroVaultURL)
+	}
+	if c.SoroVaultURL != "" && c.ABIFile != "" {
+		return errors.New("giving both --abi-file and --sorovault-url is an error")
 	}
 	return nil
 }
