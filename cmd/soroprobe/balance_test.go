@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,32 +9,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/soroworks/soroprobe/internal/probe"
 	"github.com/soroworks/soroprobe/internal/stellar/stellartest"
 )
 
-func TestBalanceCmd_ArgHolders(t *testing.T) {
-	t.Parallel()
-
+func TestBalanceCommandReadsHoldersFromArgsAndFile(t *testing.T) {
+	// The fixture's decimals simulation stands in for every call, so the
+	// balance reads back as the same u32; what is under test is the plumbing.
 	fake := stellartest.NewFake(t)
+	fake.Simulations["balance"] = fake.Simulations["decimals"]
+	list := filepath.Join(t.TempDir(), "holders.txt")
+	require.NoError(t, os.WriteFile(list, []byte("# holders\n\n"+stellartest.SACContract+"\n"), 0o600))
 
-	out, err := runWithFake(t, fake, "balance", stellartest.SACContract, "GB32JP5GNOQLW4NUMV6H2UBOSMB4DROL7YNDBWAHYXMVFLLJOH3LXKHK")
+	out, err := runWithFake(t, fake, "balance", "--json", "--file", list, stellartest.WasmContract, stellartest.WasmContract)
 	require.NoError(t, err)
-	assert.Contains(t, out, "Token:")
-	assert.Contains(t, out, "GB32JP5GNOQLW4NUMV6H2UBOSMB4DROL7YNDBWAHYXMVFLLJOH3LXKHK")
+
+	var res probe.BalanceResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Balances, 2)
+	assert.Equal(t, stellartest.WasmContract, res.Balances[0].Address)
+	assert.Equal(t, stellartest.SACContract, res.Balances[1].Address)
 }
 
-func TestBalanceCmd_FileHolders(t *testing.T) {
-	t.Parallel()
+func TestBalanceCommandBadAddressExitsOne(t *testing.T) {
+	out, err := runWithFake(t, stellartest.NewFake(t), "balance", stellartest.WasmContract, "nope")
+	assertExitCodeOne(t, err)
+	assert.Contains(t, out, "invalid address")
+}
 
-	fake := stellartest.NewFake(t)
-
-	tmp := t.TempDir()
-	filePath := filepath.Join(tmp, "holders.txt")
-	require.NoError(t, os.WriteFile(filePath, []byte("GB32JP5GNOQLW4NUMV6H2UBOSMB4DROL7YNDBWAHYXMVFLLJOH3LXKHK
-"), 0600))
-
-	out, err := runWithFake(t, fake, "balance", stellartest.SACContract, "--file", filePath)
-	require.NoError(t, err)
-	assert.Contains(t, out, "Token:")
-	assert.Contains(t, out, "GB32JP5GNOQLW4NUMV6H2UBOSMB4DROL7YNDBWAHYXMVFLLJOH3LXKHK")
+func TestBalanceCommandNeedsAHolder(t *testing.T) {
+	_, err := runWithFake(t, stellartest.NewFake(t), "balance", stellartest.WasmContract)
+	require.Error(t, err)
 }

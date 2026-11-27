@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,57 +13,37 @@ import (
 )
 
 func newBalanceCmd(opts *options) *cobra.Command {
-	var filePath string
-	var format string
-	var quiet bool
+	var file string
 
 	cmd := &cobra.Command{
-		Use:   "balance <token-id> [<holder-address>...]",
-		Short: "Query token balances for one or more holder addresses",
-		Long: `Read and format token balances from a Soroban SEP-41 token or Stellar Asset Contract (SAC).
+		Use:   "balance <token> [address...]",
+		Short: "Read a token's balances for one or many holders",
+		Long: `Read the balances of one or many holders of a token, formatted with the
+token's decimals and symbol.
 
-Queries the token's decimals and symbol and formats balances into human-readable amounts.
-Accepts accounts (G...) and contract addresses (C...). Multiple addresses can be passed as
-arguments or loaded from a file using --file.
+<token> is a SEP-41 token or a Stellar Asset Contract. Each address is an
+account ("G...") or a contract ("C..."). --file reads more addresses from a
+file, one per line, ignoring blank lines and lines starting with # ("-" for
+stdin); they are read in addition to any given as arguments.
 
-Examples:
-  soroprobe balance CDLZFC... GAAAAAAAAAAAAAAAA...
-  soroprobe balance CDLZFC... --file holders.txt
-  soroprobe balance CDLZFC... GAAA... GBBB... --json
-`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 1 {
-				return fmt.Errorf("token contract ID is required")
-			}
-			if len(args) == 1 && filePath == "" {
-				return fmt.Errorf("give at least one holder address or pass --file")
-			}
-			return nil
-		},
+The balances are read by simulating the token's own decimals, symbol and
+balance functions. Nothing is submitted, and no key is needed.
+
+An address that cannot be read is reported next to the ones that can, and
+makes the command exit 1. --json prints the balances as JSON, with the raw
+integer alongside the formatted figure.`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tokenID := args[0]
-			var holders []string
-
-			if len(args) > 1 {
-				holders = append(holders, args[1:]...)
-			}
-
-			if filePath != "" {
-				f, err := os.Open(filePath)
+			holders := args[1:]
+			if file != "" {
+				fromFile, err := readHolders(cmd, file)
 				if err != nil {
-					return fmt.Errorf("open holders file: %w", err)
+					return err
 				}
-				defer f.Close()
-
-				fileHolders, err := probe.ReadHoldersFromFile(f)
-				if err != nil {
-					return fmt.Errorf("read holders file: %w", err)
-				}
-				holders = append(holders, fileHolders...)
+				holders = append(holders, fromFile...)
 			}
-
 			if len(holders) == 0 {
-				return fmt.Errorf("no holder addresses provided")
+				return fmt.Errorf("give at least one address, or --file")
 			}
 
 			p, cleanup, err := opts.prober()
@@ -70,81 +52,72 @@ Examples:
 			}
 			defer cleanup()
 
-			report, err := p.GetTokenBalances(cmd.Context(), tokenID, holders)
+			result, err := p.Balance(cmd.Context(), probe.BalanceRequest{Token: args[0], Holders: holders})
 			if err != nil {
 				return err
 			}
 
-			out := cmd.OutOrStdout()
-			if !quiet {
-				switch format {
-				case "json":
-					if err := writeJSON(out, report); err != nil {
-						return err
-					}
-				case "markdown":
-					renderMarkdownBalances(out, report)
-				default:
-					renderTextBalances(out, report)
-				}
+			if opts.jsonOut {
+				err = writeJSON(cmd.OutOrStdout(), result)
+			} else {
+				err = renderBalance(cmd.OutOrStdout(), result)
 			}
-
-			// If any balance failed to read, exit non-zero
-			for _, h := range report.Holders {
-				if h.Error != "" {
-					return &checkFailedError{msg: fmt.Sprintf("failed to read balance for %s: %s", h.Address, h.Error), code: 1}
+			if err != nil {
+				return err
+			}
+			for _, b := range result.Balances {
+				if b.Error != "" {
+					return &checkFailedError{msg: "one or more balances could not be read"}
 				}
 			}
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVarP(&filePath, "file", "f", "", "path to file containing holder addresses, one per line")
-	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, or markdown")
-	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress output; exit code reflects success")
-
+	cmd.Flags().StringVarP(&file, "file", "f", "", `read holder addresses from this file, one per line ("-" for stdin)`)
 	return cmd
 }
 
-func renderTextBalances(w io.Writer, r *probe.TokenBalancesReport) {
-	fmt.Fprintf(w, "Token:    %s
-", r.Token.ContractID)
-	fmt.Fprintf(w, "Symbol:   %s
-", r.Token.Symbol)
-	fmt.Fprintf(w, "Decimals: %d
-
-", r.Token.Decimals)
-
-	fmt.Fprintf(w, "%-58s %s
-", "HOLDER ADDRESS", "BALANCE")
-	fmt.Fprintf(w, "%s
-", strings.Repeat("-", 76))
-	for _, h := range r.Holders {
-		if h.Error != "" {
-			fmt.Fprintf(w, "%-58s ERROR: %s
-", h.Address, h.Error)
-		} else {
-			fmt.Fprintf(w, "%-58s %s
-", h.Address, h.FormattedAmount)
+// readHolders reads one address per line.
+func readHolders(cmd *cobra.Command, path string) ([]string, error) {
+	r := cmd.InOrStdin()
+	if path != "-" {
+		f, err := os.Open(path) //nolint:gosec // --file is an operator-supplied path; reading it is the feature.
+		if err != nil {
+			return nil, err
 		}
+		defer f.Close() //nolint:errcheck // read-only input; a close error cannot lose data.
+		r = f
 	}
+	var out []string
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read holders file %s: %w", path, err)
+	}
+	return out, nil
 }
 
-func renderMarkdownBalances(w io.Writer, r *probe.TokenBalancesReport) {
-	fmt.Fprintf(w, "### Token Balances: %s (%s)
+func renderBalance(w io.Writer, r *probe.BalanceResult) error {
+	s := styler{on: colorEnabled(w)}
+	bw := &bufWriter{w: w}
 
-", r.Token.Symbol, r.Token.ContractID)
-	fmt.Fprintf(w, "| Holder Address | Balance | Raw Amount |
-")
-	fmt.Fprintf(w, "| :--- | :--- | :--- |
-")
-	for _, h := range r.Holders {
-		if h.Error != "" {
-			fmt.Fprintf(w, "| `%s` | *Error* | `%s` |
-", h.Address, h.Error)
-		} else {
-			fmt.Fprintf(w, "| `%s` | **%s** | `%s` |
-", h.Address, h.FormattedAmount, h.RawBalance)
-		}
+	label := r.Symbol
+	if label == "" {
+		label = "(no symbol)"
 	}
+	bw.printf("%s %s  %s, %d decimals\n\n", s.bold("token"), r.Token, label, r.Decimals)
+	for _, b := range r.Balances {
+		if b.Error != "" {
+			bw.printf("  %s  %s\n", s.red("ERROR"), b.Address+": "+b.Error)
+			continue
+		}
+		bw.printf("  %s %s\n", b.Address, strings.TrimSpace(b.Balance+" "+r.Symbol))
+	}
+	return bw.err
 }
