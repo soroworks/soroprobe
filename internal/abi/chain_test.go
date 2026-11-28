@@ -48,6 +48,14 @@ func ExampleNewChainSource() {
 	// Output: true
 }
 
+func BenchmarkNewChainSource(b *testing.B) {
+	b.ReportAllocs()
+	client := struct{ stellar.Client }{}
+	for i := 0; i < b.N; i++ {
+		_ = abi.NewChainSource(client)
+	}
+}
+
 func TestChainSourceDecodesRealWasmFixtureAndCachesByHash(t *testing.T) {
 	t.Parallel()
 
