@@ -225,7 +225,7 @@ func TestSoroVaultErrors(t *testing.T) {
 
 func TestNewSoroVaultValidatesURL(t *testing.T) {
 	t.Parallel()
-	for _, bad := range []string{"", "localhost:8080", "ftp://vault", "http://"} {
+	for _, bad := range []string{"-", "localhost:8080", "ftp://vault", "http://"} {
 		_, err := abi.NewSoroVault(bad, nil, 0)
 		assert.Error(t, err, bad)
 	}
@@ -285,6 +285,13 @@ func TestNewSoroVaultEdgeCases(t *testing.T) {
 			})
 		}
 	})
+}
+
+func BenchmarkNewSoroVault(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = abi.NewSoroVault("http://localhost:8080", nil, 0)
+	}
 }
 
 func TestNetworkName(t *testing.T) {
