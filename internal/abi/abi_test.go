@@ -314,3 +314,11 @@ func TestNetworkNameEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkNetworkName(b *testing.B) {
+	b.ReportAllocs()
+	passphrase := "Test SDF Network ; September 2015"
+	for i := 0; i < b.N; i++ {
+		_ = abi.NetworkName(passphrase)
+	}
+}
