@@ -10,8 +10,6 @@ import (
 )
 
 func TestCheckCmd_StandardFlag(t *testing.T) {
-	t.Parallel()
-
 	fake := stellartest.NewFake(t)
 
 	out, err := runWithFake(t, fake, "check", stellartest.SACContract, "--standard", "sep41")
