@@ -34,6 +34,12 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
+	// MaxInstructions bounds CPU instructions consumed by the simulation.
+	MaxInstructions *uint32 `json:"max_instructions,omitempty" yaml:"max_instructions,omitempty"`
+	// MaxFeeStroops bounds the resource fee in stroops consumed by the simulation.
+	MaxFeeStroops *int64 `json:"max_fee,omitempty" yaml:"max_fee,omitempty"`
+	// MaxWriteBytes bounds write bytes consumed by the simulation.
+	MaxWriteBytes *uint32 `json:"max_write_bytes,omitempty" yaml:"max_write_bytes,omitempty"`
 	// ExpectedWASMHash, when set, is the hex Wasm hash a deployment registry
 	// recorded for this contract. The check compares it with the live code
 	// hash and reports drift, which is how `check --from-soroforge` proves the
@@ -441,4 +447,51 @@ func formatVal(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+// costCheck evaluates resource costs of a simulation against configured limits.
+// If no limits are set, or if simulation was not run or failed, costCheck returns false.
+func costCheck(req CheckRequest, sim *SimulateResult) (Check, bool) {
+	if req.MaxInstructions == nil && req.MaxFeeStroops == nil && req.MaxWriteBytes == nil {
+		return Check{}, false
+	}
+	if sim == nil || !sim.Success {
+		return Check{}, false
+	}
+
+	var breaches []string
+	var details []string
+
+	if req.MaxInstructions != nil {
+		details = append(details, fmt.Sprintf("instructions %d (limit %d)", sim.Cost.Instructions, *req.MaxInstructions))
+		if sim.Cost.Instructions > *req.MaxInstructions {
+			breaches = append(breaches, fmt.Sprintf("instructions %d exceeds limit %d", sim.Cost.Instructions, *req.MaxInstructions))
+		}
+	}
+	if req.MaxFeeStroops != nil {
+		details = append(details, fmt.Sprintf("fee %d stroops (limit %d)", sim.Cost.MinResourceFee, *req.MaxFeeStroops))
+		if sim.Cost.MinResourceFee > *req.MaxFeeStroops {
+			breaches = append(breaches, fmt.Sprintf("fee %d stroops exceeds limit %d", sim.Cost.MinResourceFee, *req.MaxFeeStroops))
+		}
+	}
+	if req.MaxWriteBytes != nil {
+		details = append(details, fmt.Sprintf("write bytes %d (limit %d)", sim.Cost.WriteBytes, *req.MaxWriteBytes))
+		if sim.Cost.WriteBytes > *req.MaxWriteBytes {
+			breaches = append(breaches, fmt.Sprintf("write bytes %d exceeds limit %d", sim.Cost.WriteBytes, *req.MaxWriteBytes))
+		}
+	}
+
+	if len(breaches) > 0 {
+		return Check{
+			Name:    "cost",
+			Outcome: OutcomeFail,
+			Detail:  strings.Join(breaches, ", "),
+		}, true
+	}
+
+	return Check{
+		Name:    "cost",
+		Outcome: OutcomePass,
+		Detail:  strings.Join(details, ", "),
+	}, true
 }

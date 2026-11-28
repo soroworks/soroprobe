@@ -431,6 +431,9 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var format string
 	var quiet bool
+	var maxInstructions uint32
+	var maxFee int64
+	var maxWriteBytes uint32
 	var standard string
 	var adminFn, adminKey, rentPayer string
 	var upgradeability bool
@@ -600,7 +603,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			}
 			defer cleanup()
 
-			result, err := p.Check(cmd.Context(), probe.CheckRequest{
+			checkReq := probe.CheckRequest{
 				ContractID:     args[0],
 				Function:       function,
 				Args:           callArgs,
@@ -613,7 +616,18 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				Upgradeability: upgradeability,
 				RentPayer:      rentPayer,
 				ExtendLedgers:  extendLedgers,
-			})
+			}
+			if cmd.Flags().Changed("max-instructions") {
+				checkReq.MaxInstructions = &maxInstructions
+			}
+			if cmd.Flags().Changed("max-fee") {
+				checkReq.MaxFeeStroops = &maxFee
+			}
+			if cmd.Flags().Changed("max-write-bytes") {
+				checkReq.MaxWriteBytes = &maxWriteBytes
+			}
+
+			result, err := p.Check(cmd.Context(), checkReq)
 			if err != nil {
 				return err
 			}
@@ -662,6 +676,9 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false,
 		"print no report; the exit code is the whole answer (errors still reach stderr)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
+	cmd.Flags().Uint32Var(&maxInstructions, "max-instructions", 0, "fail when simulation consumes more than this many CPU instructions")
+	cmd.Flags().Int64Var(&maxFee, "max-fee", 0, "fail when simulation resource fee in stroops exceeds this budget")
+	cmd.Flags().Uint32Var(&maxWriteBytes, "max-write-bytes", 0, "fail when simulation ledger write bytes exceeds this budget")
 	return cmd
 }
 

@@ -486,13 +486,16 @@ Combined health check, designed for CI.
 | `--key <spec>` | A contract data key to include in the TTL check. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Combined with `--key`. |
 | `--durability <d>` | Durability for `--key` lookups. |
+| `--max-instructions <n>` | Fail when simulation consumes more CPU instructions than this limit. |
+| `--max-fee <stroops>` | Fail when simulation resource fee exceeds this limit in stroops. |
+| `--max-write-bytes <n>` | Fail when simulation write bytes exceeds this limit. |
 | `--from-soroforge <url>` | Read the contracts a [SoroForge](#checking-the-contracts-soroforge-tracks---from-soroforge) API tracks and check each. |
 | `--soroforge-token <token>` | Read-only SoroForge API token. Defaults to `SOROFORGE_API_TOKEN`. |
 | `--network <name>` | SoroForge network label for `--from-soroforge`. Defaults to the label for the configured passphrase. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, `wasm_hash` (when a
-recorded hash is given), any `data_ttl`, then `simulate`.
+recorded hash is given), any `data_ttl`, `simulate`, then `cost` (when limits are set).
 
 **Exit codes:**
 
@@ -1275,7 +1278,7 @@ many ledgers, exactly as `inspect --estimate-extend` does.
 
 ### `GET /v1/check/{contract}`
 
-Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`.
+Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`, `max_instructions`, `max_fee` (stroops), `max_write_bytes`.
 
 ### `POST /v1/checks`
 
