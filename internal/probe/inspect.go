@@ -527,7 +527,6 @@ func (r *InspectResult) worstStatus() health.Status {
 // ensure the codec interface is what inspect relies on
 var _ scval.Codec = (*scval.Registry)(nil)
 
-
 func (p *Prober) extractSACDetails(ctx context.Context, storage *xdr.ScMap) *SACDetails {
 	details := &SACDetails{
 		CodeTTLExplanation: "stellar asset contracts are built into the host environment and have no code TTL entry",
