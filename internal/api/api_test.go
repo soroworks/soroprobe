@@ -717,8 +717,9 @@ func TestCheckEndpointCachesInspectButNotSimulation(t *testing.T) {
 	do(t, h, http.MethodGet, target, "", nil)
 
 	// Check inspects and then simulates. The inspect half is cacheable; the
-	// liveness call is not.
-	assert.Len(t, fake.EntryRequests, 1)
+	// liveness call is not. The network limits the simulation is measured
+	// against are read once and cached.
+	assert.Len(t, fake.EntryRequests, 2)
 	assert.Len(t, fake.SimulateRequests, 2)
 }
 

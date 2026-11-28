@@ -156,6 +156,33 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	bw.printf("  min resource fee   %s\n", stroops(r.Cost.MinResourceFee))
 	bw.printf("  estimated total fee %s\n", stroops(r.Cost.EstimatedTotalFee))
 
+	if r.Usage != nil {
+		bw.printf("\n%s\n", s.bold("share of network limits"))
+		for _, u := range r.Usage.Resources {
+			line := fmt.Sprintf("  %-18s %5.1f%%  (%d of %d)", u.Name, u.Percent, u.Used, u.Limit)
+			if u.OverHeadroom {
+				line = s.red(line)
+			}
+			bw.printf("%s\n", line)
+		}
+		if r.Usage.Warning != "" {
+			bw.printf("  %s %s\n", s.red("WARN"), r.Usage.Warning)
+		}
+	}
+
+	if r.Fees != nil {
+		bw.printf("\n%s\n", s.bold("recommended fees"))
+		for _, o := range r.Fees.Options {
+			bw.printf("  %-7s inclusion %s (p%d)  total %s = %s XLM\n",
+				o.Level, stroops(o.InclusionFee), o.Percentile, stroops(o.TotalFee), o.TotalXLM)
+		}
+		bw.printf("  %s\n", s.dim(fmt.Sprintf("from %s: %d transactions over %d ledgers up to ledger %d",
+			r.Fees.Source, r.Fees.TransactionCount, r.Fees.LedgerCount, r.Fees.LatestLedger)))
+		if r.Fees.Note != "" {
+			bw.printf("  %s\n", s.dim("note: "+r.Fees.Note))
+		}
+	}
+
 	if len(r.Auth) > 0 {
 		bw.printf("\n%s\n", s.bold("authorizations"))
 		for _, a := range r.Auth {
@@ -163,9 +190,9 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 				bw.printf("  %s %s\n", s.dim("raw xdr:"), a.RawXDR)
 				continue
 			}
-			src := ""
+			src := s.dim(" (needs its own signature)")
 			if a.IsSourceAccount {
-				src = s.dim(" (source account)")
+				src = s.dim(" (source account) signs with the transaction")
 			}
 			bw.printf("  %s%s\n", s.cyan(a.Address), src)
 			if a.RootInvocation != nil {
@@ -213,7 +240,14 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	// formatted event log in the error text above, so repeating them would only
 	// add noise. They remain available, decoded and structured, under --json.
 
-	bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated against ledger %d", r.LatestLedger)))
+	for _, n := range r.Notes {
+		bw.printf("%s\n", s.dim("note: "+n))
+	}
+	if r.Source != "" {
+		bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated as %s against ledger %d", r.Source, r.LatestLedger)))
+	} else {
+		bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated against ledger %d", r.LatestLedger)))
+	}
 	return bw.err
 }
 

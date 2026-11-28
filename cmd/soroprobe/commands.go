@@ -59,6 +59,8 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
+	var source string
+	var headroom float64
 	var compareWith string
 	var trace bool
 	var envelope, envelopeFile string
@@ -181,6 +183,8 @@ building one. It must hold a single InvokeHostFunction operation.
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
+				Source:             source,
+				HeadroomPercent:    headroom,
 				Trace:              trace,
 			})
 			if err != nil {
@@ -242,6 +246,8 @@ building one. It must hold a single InvokeHostFunction operation.
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
+	cmd.Flags().StringVar(&source, "source", "", "simulate as this existing account (G...); its sequence and authorizations are used. Never a secret key")
+	cmd.Flags().Float64Var(&headroom, "headroom", probe.DefaultHeadroomPercent, "warn when a resource uses more than this percentage of the network limit")
 	cmd.Flags().StringVar(&compareWith, "compare", "", "simulate the same call on this second contract and compare footprints and resources")
 	cmd.Flags().BoolVar(&trace, "trace", false, "print the cross-contract call tree")
 	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate this prebuilt base64 transaction envelope as given")
@@ -419,6 +425,7 @@ has already expired — says so instead of quoting a price.
 }
 
 func newCheckCmd(opts *options) *cobra.Command {
+	var checkHeadroom float64
 	var function string
 	var callArgs []string
 	var expect string
@@ -601,18 +608,19 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			defer cleanup()
 
 			result, err := p.Check(cmd.Context(), probe.CheckRequest{
-				ContractID:     args[0],
-				Function:       function,
-				Args:           callArgs,
-				Expect:         expect,
-				DataKeys:       keys,
-				DataDurability: d,
-				Standard:       standard,
-				AdminFn:        adminFn,
-				AdminKey:       adminKey,
-				Upgradeability: upgradeability,
-				RentPayer:      rentPayer,
-				ExtendLedgers:  extendLedgers,
+				ContractID:      args[0],
+				Function:        function,
+				Args:            callArgs,
+				Expect:          expect,
+				DataKeys:        keys,
+				DataDurability:  d,
+				Standard:        standard,
+				AdminFn:         adminFn,
+				AdminKey:        adminKey,
+				Upgradeability:  upgradeability,
+				RentPayer:       rentPayer,
+				ExtendLedgers:   extendLedgers,
+				HeadroomPercent: checkHeadroom,
 			})
 			if err != nil {
 				return err
@@ -636,6 +644,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 	}
 
 	cmd.Flags().StringVar(&function, "fn", "", "read-only function to simulate as a liveness probe")
+	cmd.Flags().Float64Var(&checkHeadroom, "headroom", probe.DefaultHeadroomPercent, "with --fn, warn when the call uses more than this percentage of a network limit")
 	cmd.Flags().StringArrayVar(&callArgs, "arg", nil, "argument for --fn, in type:value form (repeatable)")
 	cmd.Flags().StringVar(&standard, "standard", "",
 		fmt.Sprintf("verify the contract's interface against a standard (%s)", strings.Join(abi.StandardNames(), ", ")))

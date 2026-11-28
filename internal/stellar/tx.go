@@ -11,6 +11,10 @@ import (
 type InvocationParams struct {
 	// SourceAccount is the public key ("G...") used as the transaction source.
 	SourceAccount string
+	// Sequence is the source account's current sequence number. Zero, the
+	// default, suits the placeholder account; a real account passes its own
+	// so the simulated transaction is one it could actually submit.
+	Sequence int64
 	// Contract is the contract being invoked.
 	Contract xdr.ScAddress
 	// Function is the exported contract function name.
@@ -44,7 +48,7 @@ func BuildInvocationTx(p InvocationParams) (string, error) {
 		args = []xdr.ScVal{}
 	}
 
-	account := txnbuild.NewSimpleAccount(p.SourceAccount, 0)
+	account := txnbuild.NewSimpleAccount(p.SourceAccount, p.Sequence)
 	op := &txnbuild.InvokeHostFunction{
 		HostFunction: xdr.HostFunction{
 			Type: xdr.HostFunctionTypeHostFunctionTypeInvokeContract,

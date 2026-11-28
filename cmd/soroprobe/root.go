@@ -96,6 +96,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 		newCompatCmd(opts),
 		newCompareCmd(opts),
 		newBalanceCmd(opts),
+		newLimitsCmd(opts),
 		newWasmCmd(opts),
 		newTxCmd(opts),
 		newDiffCmd(opts),
@@ -103,7 +104,6 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 		newVerifyCmd(opts),
 		newServeCmd(opts),
 		newVersionCmd(),
-		newBalanceCmd(opts),
 	)
 	return cmd, opts
 }

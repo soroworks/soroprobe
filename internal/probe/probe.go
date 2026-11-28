@@ -33,6 +33,7 @@ type Prober struct {
 	network      string
 	baseFee      int64
 	inspectCache *inspectCache
+	limits       *limitsCache
 }
 
 // Options configures a Prober.
@@ -106,6 +107,7 @@ func New(opts Options) (*Prober, error) {
 		network:            opts.Network,
 		inspectCache:       cache,
 		baseFee:            baseFee,
+		limits:             &limitsCache{},
 	}, nil
 }
 

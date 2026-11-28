@@ -32,6 +32,14 @@ type SimulateRequest struct {
 	// reports the spread between the runs. It is how a noisy estimate is
 	// told apart from a stable one.
 	Repeat int `json:"repeat,omitempty"`
+	// Source, when set, is the account ("G...") the call is simulated as.
+	// The account must exist: its sequence number is read from the ledger,
+	// so calls whose behavior depends on the invoker see the real one.
+	// Empty means the configured placeholder source account.
+	Source string `json:"source,omitempty"`
+	// HeadroomPercent is the share of a network limit a resource may use
+	// before the result warns about it. Zero means DefaultHeadroomPercent.
+	HeadroomPercent float64 `json:"headroom_percent,omitempty"`
 	// Trace builds the cross-contract call tree from the simulation's
 	// diagnostic events.
 	Trace bool `json:"trace,omitempty"`
@@ -274,6 +282,15 @@ type SimulateResult struct {
 	// Auth lists the authorization entries the call requires.
 	Auth []AuthEntry `json:"auth,omitempty"`
 
+	// Usage compares each resource with the network's per-transaction
+	// limit, and warns when one is over the headroom threshold.
+	Usage *UsageReport `json:"usage,omitempty"`
+	// Fees recommends inclusion fees from recent network fee stats.
+	Fees *FeeRecommendation `json:"fees,omitempty"`
+	// Notes explain information that could not be added, such as limits
+	// or fee stats the RPC did not return.
+	Notes []string `json:"notes,omitempty"`
+
 	// LatestLedger is the ledger the simulation ran against.
 	LatestLedger uint32 `json:"latest_ledger"`
 }
@@ -340,8 +357,14 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		req.Repeat = 1
 	}
 
+	source, sequence, err := p.simulationSource(ctx, req.Source)
+	if err != nil {
+		return nil, err
+	}
+
 	envelope, err := stellar.BuildInvocationTx(stellar.InvocationParams{
-		SourceAccount: p.source,
+		SourceAccount: source,
+		Sequence:      sequence,
 		Contract:      contract,
 		Function:      req.Function,
 		Args:          args,
@@ -377,6 +400,10 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 
 	result.Signature = typed.signature
 	result.ABINote = typed.note
+	result.Source = source
+	if result.Success {
+		p.addLimitsAndFees(ctx, req, result)
+	}
 	if req.Trace {
 		if err := p.addTrace(ctx, result, lastResp.EventsXDR); err != nil {
 			return nil, err
@@ -552,7 +579,11 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 	}
 
 	if len(resp.Results) > 0 && resp.Results[0].AuthXDR != nil && len(*resp.Results[0].AuthXDR) > 0 {
-		result.Auth = p.decodeAuthEntries(*resp.Results[0].AuthXDR)
+		source := p.source
+		if req.Source != "" {
+			source = req.Source
+		}
+		result.Auth = p.decodeAuthEntries(*resp.Results[0].AuthXDR, source)
 	}
 
 	result.Cost.EstimatedTotalFee = EstimateTotalFee(result.Cost.ResourceFee, p.baseFee)
@@ -569,7 +600,10 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 	return result, nil
 }
 
-func (p *Prober) decodeAuthEntries(raw []string) []AuthEntry {
+// decodeAuthEntries decodes the authorizations a call needs. source is the
+// transaction's source account: entries it signs with the transaction are
+// marked IsSourceAccount, and every other entry needs its own signer.
+func (p *Prober) decodeAuthEntries(raw []string, source string) []AuthEntry {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -584,7 +618,7 @@ func (p *Prober) decodeAuthEntries(raw []string) []AuthEntry {
 		ae := AuthEntry{}
 		switch entry.Credentials.Type {
 		case xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount:
-			ae.Address = p.source
+			ae.Address = source
 			ae.IsSourceAccount = true
 		case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
 			if entry.Credentials.Address != nil {
@@ -592,21 +626,21 @@ func (p *Prober) decodeAuthEntries(raw []string) []AuthEntry {
 					ae.Address = s
 				}
 			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+			ae.IsSourceAccount = (ae.Address != "" && ae.Address == source)
 		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
 			if entry.Credentials.AddressV2 != nil {
 				if s, err := entry.Credentials.AddressV2.Address.String(); err == nil {
 					ae.Address = s
 				}
 			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+			ae.IsSourceAccount = (ae.Address != "" && ae.Address == source)
 		case xdr.SorobanCredentialsTypeSorobanCredentialsAddressWithDelegates:
 			if entry.Credentials.AddressWithDelegates != nil {
 				if s, err := entry.Credentials.AddressWithDelegates.AddressCredentials.Address.String(); err == nil {
 					ae.Address = s
 				}
 			}
-			ae.IsSourceAccount = (ae.Address != "" && ae.Address == p.source)
+			ae.IsSourceAccount = (ae.Address != "" && ae.Address == source)
 		default:
 			ae.IsSourceAccount = false
 		}

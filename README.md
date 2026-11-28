@@ -862,6 +862,31 @@ only verify sources and images you trust. Values starting with `-` are rejected
 for `--source`, `--rev` and `--image`, and metadata read from the contract is
 held to the same rule.
 
+### `soroprobe limits`
+
+Prints the Soroban resource limits the network enforces right now, read from the ledger's config setting entries rather than documentation:
+
+- per transaction: CPU instructions, memory, disk read entries and bytes, write entries and bytes, footprint entries, events size and transaction size
+- per ledger: the same totals
+- per entry: the contract code size and the contract data key and entry sizes
+
+Each limit comes with its unit. A setting the network does not return, or one whose type this version cannot decode, is listed instead of causing an error. `--json` emits the same values.
+
+### Limits, headroom and fees in `simulate`
+
+A successful simulation also reports:
+
+- **Share of network limits.** CPU instructions, disk read bytes, write bytes and footprint entries, each as a percentage of the per-transaction limit. A resource above `--headroom` (default 80%) prints a WARN: the call passes today but grows into a failure as data grows. `check --fn` reports the same as a `headroom` check. The limits are read from the ledger and cached for a minute.
+- **Recommended fees.** The resource fee plus the low (p10), median (p50) and high (p90) Soroban inclusion fees from `getFeeStats`, each as a total in stroops and XLM. The sample's ledger range and transaction count are shown, and no option is below the network's minimum fee.
+
+### Simulating as a real account: `simulate --source G...`
+
+`--source` simulates the call as an existing account. Its sequence number is read from the ledger, so calls whose behavior depends on the invoker see the real one: balances, allowances, `require_auth` on the source.
+
+- A missing account is a clear error.
+- The authorizations section marks which entries the source signs with the transaction and which need another signer.
+- Only a public key is accepted; a secret key is refused without being echoed.
+
 ### `soroprobe tx <hash>`
 
 Fetches a submitted transaction with `getTransaction` and explains it:

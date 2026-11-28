@@ -51,7 +51,7 @@ func TestCheckBatchMatchesIndividualChecksWithFewerLedgerRequests(t *testing.T) 
 	batched, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks})
 	require.NoError(t, err)
 	require.Len(t, batched.Items, len(checks))
-	assert.Len(t, fake.EntryRequests, 2, "the batch uses one instance/data round and one code round")
+	assert.Len(t, fake.EntryRequests, 3, "the batch uses one instance/data round, one code round and one read of the network limits")
 
 	for i, check := range checks {
 		individual, err := p.Check(context.Background(), check.CheckRequest)

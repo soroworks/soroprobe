@@ -96,6 +96,15 @@ func run(rpcURL, outDir, sac, wasm, undeployed, source string) error {
 	}
 	fmt.Printf("recorded latest ledger %d (protocol %d)\n", latest.Sequence, latest.ProtocolVersion)
 
+	feeStats, err := client.GetFeeStats(ctx)
+	if err != nil {
+		return fmt.Errorf("getFeeStats: %w", err)
+	}
+	if err := write(outDir, "fee_stats.json", feeStats); err != nil {
+		return err
+	}
+	fmt.Printf("recorded fee stats over %d ledgers\n", feeStats.SorobanInclusionFee.LedgerCount)
+
 	// Instance entries.
 	for _, c := range []struct {
 		name     string

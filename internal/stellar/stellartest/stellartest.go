@@ -110,6 +110,11 @@ type Fake struct {
 	LedgerCloseInterval   time.Duration
 	LatestLedgerCloseTime int64
 
+	// FeeStats is what getFeeStats reports; NewFake loads fee_stats.json.
+	// FeeStatsErr injects a getFeeStats failure.
+	FeeStats    protocol.GetFeeStatsResponse
+	FeeStatsErr error
+
 	// Transactions maps a transaction hash to the getTransaction response
 	// to return. A hash absent from the map is reported as NOT_FOUND, as RPC
 	// reports a transaction outside its retention window.
@@ -179,6 +184,7 @@ func NewFake(t testing.TB) *Fake {
 	f.Simulations["no_such_fn"] = LoadSimulate(t, "simulate_failure.json")
 	f.Simulations["transfer"] = LoadSimulate(t, "simulate_auth.json")
 	f.Simulations[ExtendFootprintTTL] = LoadSimulate(t, "simulate_extend.json")
+	Load(t, "fee_stats.json", &f.FeeStats)
 	return f
 }
 
@@ -297,6 +303,14 @@ func (f *Fake) GetTransaction(_ context.Context, req protocol.GetTransactionRequ
 			TransactionHash: req.Hash,
 		},
 	}, nil
+}
+
+// GetFeeStats implements stellar.Client.
+func (f *Fake) GetFeeStats(context.Context) (protocol.GetFeeStatsResponse, error) {
+	if f.FeeStatsErr != nil {
+		return protocol.GetFeeStatsResponse{}, f.FeeStatsErr
+	}
+	return f.FeeStats, nil
 }
 
 // GetHealth implements stellar.Client.
