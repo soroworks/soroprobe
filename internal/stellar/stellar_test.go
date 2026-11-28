@@ -85,9 +85,9 @@ func TestParseContractIDBoundaries(t *testing.T) {
 	}{
 		{"payload one byte short", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMLRA", "payload length 31"},
 		{"payload one byte long", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADZKM", "payload length 33"},
-		{"lowercase is not canonical", "caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabsc4", "non-canonical"},
-		{"leading space", " " + zeroContract, "non-canonical"},
-		{"trailing space", zeroContract + " ", "non-canonical"},
+		{"lowercase is not canonical", "caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabsc4", "illegal base32 data"},
+		{"leading space", " " + zeroContract, "illegal base32 data"},
+		{"trailing space", zeroContract + " ", "illegal base32 data"},
 	}
 
 	for _, tt := range tests {
