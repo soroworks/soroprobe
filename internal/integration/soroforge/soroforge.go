@@ -1,4 +1,4 @@
-// Package soroforge reads the contracts a SoroForge registry tracks.
+﻿// Package soroforge reads the contracts a SoroForge registry tracks.
 //
 // SoroForge records every deploy and upgrade: the contract ID, the network and
 // the Wasm hash that was live when the change was confirmed. SoroProbe can read

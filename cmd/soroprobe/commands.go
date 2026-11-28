@@ -19,6 +19,7 @@ import (
 	"github.com/soroworks/soroprobe/internal/api"
 	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/health"
+	"github.com/soroworks/soroprobe/internal/integration/soroforge"
 	"github.com/soroworks/soroprobe/internal/probe"
 )
 
@@ -520,16 +521,16 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if fromSoroForge != "" {
 				if len(args) > 0 {
-					return fmt.Errorf("give --from-soroforge or a contract ID, not both")
-				}
-				if file != "" {
-					return fmt.Errorf("give --from-soroforge or --file, not both")
-				}
-				return nil
+				return fmt.Errorf("give --from-soroforge or a contract ID, not both")
 			}
-			if network != "" {
-				return fmt.Errorf("--network selects a SoroForge network; give it with --from-soroforge")
+			if file != "" {
+				return fmt.Errorf("give --from-soroforge or --file, not both")
 			}
+			return nil
+		}
+		if network != "" {
+			return fmt.Errorf("--network selects a SoroForge network; give it with --from-soroforge")
+		}
 			if file != "" {
 				if len(args) > 0 {
 					return fmt.Errorf("give a contract ID or --file, not both")
