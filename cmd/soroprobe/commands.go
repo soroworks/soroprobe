@@ -59,6 +59,7 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var maxIncrease string
 	var repeat int
 	var maxSpread string
+	var decimals int
 	var compareWith string
 	var trace bool
 	var envelope, envelopeFile string
@@ -173,6 +174,14 @@ building one. It must hold a single InvokeHostFunction operation.
 			}
 			defer cleanup()
 
+			var decimalsPtr *int
+			if cmd.Flags().Changed("decimals") {
+				if decimals < 0 {
+					return fmt.Errorf("--decimals must be non-negative")
+				}
+				decimalsPtr = &decimals
+			}
+
 			result, err := p.Simulate(cmd.Context(), probe.SimulateRequest{
 				ContractID:         args[0],
 				Function:           args[1],
@@ -181,6 +190,7 @@ building one. It must hold a single InvokeHostFunction operation.
 				MaxIncreasePercent: threshold,
 				Repeat:             repeat,
 				MaxSpreadPercent:   spread,
+				Decimals:           decimalsPtr,
 				Trace:              trace,
 			})
 			if err != nil {
@@ -242,6 +252,7 @@ building one. It must hold a single InvokeHostFunction operation.
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
 	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
+	cmd.Flags().IntVar(&decimals, "decimals", 0, "format integer return values as a token amount with this decimal count")
 	cmd.Flags().StringVar(&compareWith, "compare", "", "simulate the same call on this second contract and compare footprints and resources")
 	cmd.Flags().BoolVar(&trace, "trace", false, "print the cross-contract call tree")
 	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate this prebuilt base64 transaction envelope as given")
