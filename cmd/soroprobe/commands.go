@@ -55,6 +55,8 @@ is handed an inferred i128.`
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
 	var file string
+	var envelope string
+	var envelopeFile string
 	var baselinePath string
 	var maxIncrease string
 	var repeat int
@@ -64,12 +66,16 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var envelope, envelopeFile string
 
 	cmd := &cobra.Command{
-		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
+		Use:   "simulate <contract-id> <function> [args...] | simulate --envelope <base64> | simulate --file <calls.json>",
 		Short: "Simulate a contract invocation and report its result and cost",
 		Long: `Build a contract invocation, simulate it against the network, and report
 whether it would succeed, what it would return, and what it would cost.
 
 Nothing is submitted and no signing takes place.
+
+--envelope and --envelope-file simulate a prebuilt base64 XDR transaction
+envelope as given, decoding the invocation and any sub-invocations with the
+target contract's interface when available.
 
 --file reads named calls from a JSON file ("-" for stdin). Each call contains
 name, contract_id, function and optional args. Calls run sequentially and
@@ -238,6 +244,8 @@ building one. It must hold a single InvokeHostFunction operation.
 
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
+	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate a prebuilt base64 XDR transaction envelope")
+	cmd.Flags().StringVar(&envelopeFile, "envelope-file", "", `read a prebuilt base64 XDR transaction envelope from a file ("-" for stdin)`)
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
 	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
@@ -247,6 +255,27 @@ building one. It must hold a single InvokeHostFunction operation.
 	cmd.Flags().StringVar(&envelope, "envelope", "", "simulate this prebuilt base64 transaction envelope as given")
 	cmd.Flags().StringVar(&envelopeFile, "envelope-file", "", `read the envelope to simulate from a file ("-" for stdin)`)
 	return cmd
+}
+
+func readEnvelopeFile(stdin io.Reader, path string) (string, error) {
+	r := stdin
+	if path != "-" {
+		f, err := os.Open(path) //nolint:gosec // --envelope-file is an operator-supplied path.
+		if err != nil {
+			return "", fmt.Errorf("read envelope file %s: %w", path, err)
+		}
+		defer func() { _ = f.Close() }()
+		r = f
+	}
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("read envelope file %s: %w", path, err)
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "", fmt.Errorf("envelope file %s is empty", path)
+	}
+	return trimmed, nil
 }
 
 // readBaseline reads a saved simulation report to compare a cost against.
