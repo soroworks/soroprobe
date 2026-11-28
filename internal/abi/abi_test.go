@@ -166,7 +166,7 @@ func TestSoroVaultInterface(t *testing.T) {
 		  "contract_id": "` + contract + `",
 		  "interface": {"functions": [{"name": "decimals", "inputs": [],
 		    "outputs": [{"kind": "u32", "display": "u32"}]}]}
-		}`)):
+		}`))
 	}))
 	defer srv.Close()
 
@@ -273,7 +273,7 @@ func TestNewSoroVaultEdgeCases(t *testing.T) {
 				var gotPath string
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					gotPath = r.URL.Path
-					_, _ = w.Write([]byte(`{"contract_id":"` + contract + `","interface":{}}`))
+					_, _ = w.Write([]byte(`{"contract_id":"` + contract + `","interface":{"functions":[]}}`))
 				}))
 				defer srv.Close()
 
