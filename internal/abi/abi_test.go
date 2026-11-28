@@ -2,6 +2,7 @@ package abi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -312,5 +313,112 @@ func TestNetworkNameEdgeCases(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, abi.NetworkName(tc.passphrase))
 		})
+	}
+}
+
+// TestJSONRoundTripFunction tests that a Function struct can be marshaled
+// and unmarshaled round-trip through JSON without losing data.
+func TestJSONRoundTripFunction(t *testing.T) {
+	t.Parallel()
+
+	fn := abi.Function{
+		Name: "transfer",
+		Inputs: []abi.Param{
+			{Name: "from", Type: abi.Type{Kind: "address", Display: "Address"}},
+			{Name: "to", Type: abi.Type{Kind: "address", Display: "Address"}},
+			{Name: "amount", Type: abi.Type{Kind: "i128", Display: "i128"}},
+		},
+		Outputs: []abi.Type{
+			{Kind: "bool", Display: "bool"},
+		},
+		Doc: " transfers tokens",
+	}
+
+	data, err := json.Marshal(fn)
+	require.NoError(t, err)
+
+	var fn2 abi.Function
+	err = json.Unmarshal(data, &fn2)
+	require.NoError(t, err)
+
+	assert.Equal(t, fn.Name, fn2.Name)
+	assert.Equal(t, fn.Doc, fn2.Doc)
+	assert.Len(t, fn2.Inputs, len(fn.Inputs))
+	for i := range fn.Inputs {
+		assert.Equal(t, fn.Inputs[i].Name, fn2.Inputs[i].Name)
+		assert.Equal(t, fn.Inputs[i].Type, fn2.Inputs[i].Type)
+	}
+	assert.Equal(t, fn.Outputs, fn2.Outputs)
+}
+
+// TestJSONRoundTripInterface tests that an Interface struct can be marshaled
+// and unmarshaled round-trip through JSON without losing data.
+func TestJSONRoundTripInterface(t *testing.T) {
+	t.Parallel()
+
+	iface := abi.Interface{
+		Functions: []abi.Function{
+			{
+				Name: "decimals",
+				Inputs: []abi.Param{},
+				Outputs: []abi.Type{
+					{Kind: "u32", Display: "u32"},
+				},
+			},
+		},
+		Types: []abi.UDT{
+			{
+				Kind: "struct",
+				Name: "Config",
+				Fields: []abi.Param{
+					{Name: "admin", Type: abi.Type{Kind: "address", Display: "Address"}},
+					{Name: "fee", Type: abi.Type{Kind: "u32", Display: "u32"}},
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(iface)
+	require.NoError(t, err)
+
+	var iface2 abi.Interface
+	err = json.Unmarshal(data, &iface2)
+	require.NoError(t, err)
+
+	assert.Len(t, iface2.Functions, len(iface.Functions))
+	assert.Len(t, iface2.Types, len(iface.Types))
+	assert.Equal(t, iface.Functions[0].Name, iface2.Functions[0].Name)
+	assert.Equal(t, iface.Functions[0].Inputs, iface2.Functions[0].Inputs)
+	assert.Equal(t, iface.Functions[0].Outputs, iface2.Functions[0].Outputs)
+	assert.Equal(t, iface.Types[0].Name, iface2.Types[0].Name)
+	assert.Equal(t, iface.Types[0].Kind, iface2.Types[0].Kind)
+	assert.Equal(t, iface.Types[0].Fields, iface2.Types[0].Fields)
+}
+
+// TestJSONRoundTripCase tests that a Case struct can be marshaled
+// and unmarshaled round-trip through JSON without losing data.
+func TestJSONRoundTripCase(t *testing.T) {
+	t.Parallel()
+
+	case_ := abi.Case{
+		Name: "Low",
+		Value: 1,
+		Payload: []abi.Type{
+			{Kind: "address", Display: "Address"},
+		},
+	}
+
+	data, err := json.Marshal(case_)
+	require.NoError(t, err)
+
+	var case2 abi.Case
+	err = json.Unmarshal(data, &case2)
+	require.NoError(t, err)
+
+	assert.Equal(t, case_.Name, case2.Name)
+	assert.Equal(t, case_.Value, case2.Value)
+	assert.Equal(t, len(case_.Payload), len(case2.Payload))
+	for i := range case_.Payload {
+		assert.Equal(t, case_.Payload[i], case2.Payload[i])
 	}
 }

@@ -1,6 +1,7 @@
 package abi_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -246,4 +247,27 @@ func TestParseWasmRejectsAModuleWithoutASpec(t *testing.T) {
 	require.Error(t, err)
 	_, err = abi.ParseWasm([]byte("not wasm"))
 	require.Error(t, err)
+}
+
+// TestJSONRoundTripChange tests that a Change struct can be marshaled
+// and unmarshaled round-trip through JSON without losing data.
+func TestJSONRoundTripChange(t *testing.T) {
+	t.Parallel()
+
+	change := abi.Change{
+		Breaking: true,
+		Subject:  "fn transfer",
+		Detail:   "argument 3 (amount) type changed from i128 to u64",
+	}
+
+	data, err := json.Marshal(change)
+	require.NoError(t, err)
+
+	var change2 abi.Change
+	err = json.Unmarshal(data, &change2)
+	require.NoError(t, err)
+
+	assert.Equal(t, change.Breaking, change2.Breaking)
+	assert.Equal(t, change.Subject, change2.Subject)
+	assert.Equal(t, change.Detail, change2.Detail)
 }
