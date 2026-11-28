@@ -189,17 +189,17 @@ func TestGetLedgerEntriesEdgeCases(t *testing.T) {
 	}{
 		{
 			name:        "empty input",
-			req:        probe.BatchRequest{Checks: nil},
+			req:         probe.BatchRequest{Checks: nil},
 			expectedErr: probe.ErrInvalidBatch,
 		},
 		{
 			name:        "boundary max checks",
-			req:        probe.BatchRequest{Checks: maxChecks},
+			req:         probe.BatchRequest{Checks: maxChecks},
 			expectedErr: nil,
 		},
 		{
 			name:        "invalid negative concurrency",
-			req:        probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}, Concurrency: -1},
+			req:         probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}, Concurrency: -1},
 			expectedErr: probe.ErrInvalidBatch,
 		},
 	}
