@@ -184,7 +184,7 @@ func TestParseMetaEdgeCases(t *testing.T) {
 
 	truncatedMetaWasm := append(
 		[]byte{0x00, 'a', 's', 'm', 0x01, 0x00, 0x00, 0x00, 0x00, 19, 14},
-		[]byte("contractmetav0")...
+		[]byte("contractmetav0")...,
 	)
 	truncatedMetaWasm = append(truncatedMetaWasm, []byte{0, 0, 0, 0}...)
 
